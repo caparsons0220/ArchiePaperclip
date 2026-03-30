@@ -92,6 +92,7 @@ type CompanyInviteCreated = {
   expiresAt: string;
   allowedJoinTypes: "human" | "agent" | "both";
   humanRole?: HumanCompanyRole | null;
+  companyName?: string | null;
   onboardingTextPath?: string;
   onboardingTextUrl?: string;
   inviteMessage?: string | null;

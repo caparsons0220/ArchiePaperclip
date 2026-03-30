@@ -31,13 +31,13 @@ export function healthRoutes(
     }
 
     try {
-      await db.execute(sql`select 1`);
+      await db.execute(sql`SELECT 1`);
     } catch (error) {
       logger.warn({ err: error }, "Health check database probe failed");
       res.status(503).json({
-        status: "error",
-        error: "Database unavailable",
+        status: "unhealthy",
         version: serverVersion,
+        error: "database_unreachable"
       });
       return;
     }
