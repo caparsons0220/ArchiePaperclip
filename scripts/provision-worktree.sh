@@ -32,17 +32,34 @@ source_env_path="$(dirname "$source_config_path")/.env"
 mkdir -p "$paperclip_dir"
 
 run_isolated_worktree_init() {
+  local base_cli_runner="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
+  local base_cli_entry="$base_cwd/cli/src/index.ts"
+
+  if [[ -f "$base_cli_runner" && -f "$base_cli_entry" ]]; then
+    (
+      cd "$worktree_cwd"
+      node "$base_cli_runner" "$base_cli_entry" worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+    )
+    return 0
+  fi
+
   if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
-    pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+    (
+      cd "$worktree_cwd"
+      pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+    )
     return 0
   fi
 
   if command -v paperclipai >/dev/null 2>&1; then
-    paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+    (
+      cd "$worktree_cwd"
+      paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+    )
     return 0
   fi
 
-  return 1
+  return 127
 }
 
 write_fallback_worktree_config() {
@@ -296,6 +313,11 @@ EOF
 }
 
 if ! run_isolated_worktree_init; then
+  status=$?
+  if [[ "$status" -ne 127 ]]; then
+    exit "$status"
+  fi
+
   echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
   write_fallback_worktree_config
 fi
