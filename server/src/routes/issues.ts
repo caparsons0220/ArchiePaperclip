@@ -16,6 +16,7 @@ import {
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
   upsertIssueFeedbackVoteSchema,
+  issueWorkProductTypeSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
@@ -865,6 +866,32 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     const workProducts = await workProductsSvc.listForIssue(issue.id);
+    res.json(workProducts);
+  });
+
+  router.get("/companies/:companyId/work-products", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const typeRaw = typeof req.query.type === "string" ? req.query.type.trim() : "";
+    const type = typeRaw
+      ? issueWorkProductTypeSchema.safeParse(typeRaw)
+      : { success: true as const, data: undefined };
+    if (!type.success) {
+      res.status(400).json({ error: "Invalid work product type", details: type.error.issues });
+      return;
+    }
+
+    const limitRaw = typeof req.query.limit === "string" ? Number.parseInt(req.query.limit, 10) : null;
+    if (limitRaw !== null && (!Number.isFinite(limitRaw) || limitRaw <= 0)) {
+      res.status(400).json({ error: "Invalid limit" });
+      return;
+    }
+
+    const workProducts = await workProductsSvc.listForCompany(companyId, {
+      type: type.data,
+      limit: limitRaw ?? undefined,
+    });
     res.json(workProducts);
   });
 

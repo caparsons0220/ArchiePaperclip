@@ -18,6 +18,7 @@ import { RoutineDetail } from "./pages/RoutineDetail";
 import { UserProfile } from "./pages/UserProfile";
 import { ExecutionWorkspaceDetail } from "./pages/ExecutionWorkspaceDetail";
 import { Goals } from "./pages/Goals";
+import { Artifacts } from "./pages/Artifacts";
 import { GoalDetail } from "./pages/GoalDetail";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
@@ -106,6 +107,7 @@ function boardRoutes() {
       <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<ExecutionWorkspaceDetail />} />
       <Route path="execution-workspaces/:workspaceId/issues" element={<ExecutionWorkspaceDetail />} />
       <Route path="goals" element={<Goals />} />
+      <Route path="artifacts" element={<Artifacts />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
       <Route path="approvals/pending" element={<Approvals />} />

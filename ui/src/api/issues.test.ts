@@ -29,4 +29,12 @@ describe("issuesApi.list", () => {
 
     expect(mockApi.get).toHaveBeenCalledWith("/issues/issue-1/deliverables");
   });
+
+  it("calls the company work products endpoint with filters", async () => {
+    await issuesApi.listCompanyWorkProducts("company-1", { type: "artifact", limit: 24 });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/work-products?type=artifact&limit=24",
+    );
+  });
 });

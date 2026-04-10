@@ -165,6 +165,19 @@ export const issuesApi = {
   unlinkApproval: (id: string, approvalId: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/approvals/${approvalId}`),
   getDeliverables: (id: string) => api.get<IssueDeliverablesResponse>(`/issues/${id}/deliverables`),
+  listCompanyWorkProducts: (
+    companyId: string,
+    filters?: {
+      type?: string;
+      limit?: number;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (filters?.type) params.set("type", filters.type);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    const qs = params.toString();
+    return api.get<IssueWorkProduct[]>(`/companies/${companyId}/work-products${qs ? `?${qs}` : ""}`);
+  },
   listWorkProducts: (id: string) => api.get<IssueWorkProduct[]>(`/issues/${id}/work-products`),
   createWorkProduct: (id: string, data: Record<string, unknown>) =>
     api.post<IssueWorkProduct>(`/issues/${id}/work-products`, data),

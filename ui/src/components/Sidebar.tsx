@@ -1,4 +1,5 @@
 import {
+  Package,
   Inbox,
   CircleDot,
   Target,
@@ -104,6 +105,7 @@ export function Sidebar() {
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
+          <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
         </SidebarSection>
 
         <SidebarProjects />

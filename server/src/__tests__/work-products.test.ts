@@ -92,4 +92,25 @@ describe("workProductService", () => {
     expect(txUpdate).toHaveBeenCalledTimes(2);
     expect(result?.reviewState).toBe("ready_for_review");
   });
+
+  it("lists company work products filtered by type and limit", async () => {
+    const rows = [
+      createWorkProductRow({ id: "artifact-2", type: "artifact", updatedAt: new Date("2026-03-18T00:00:00.000Z") }),
+      createWorkProductRow({ id: "artifact-1", type: "artifact", updatedAt: new Date("2026-03-17T00:00:00.000Z") }),
+    ];
+    const limit = vi.fn(async () => rows);
+    const orderBy = vi.fn(() => ({ limit }));
+    const where = vi.fn(() => ({ orderBy }));
+    const from = vi.fn(() => ({ where }));
+    const select = vi.fn(() => ({ from }));
+
+    const svc = workProductService({ select } as any);
+    const result = await svc.listForCompany("company-1", { type: "artifact", limit: 2 });
+
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(where).toHaveBeenCalledTimes(1);
+    expect(orderBy).toHaveBeenCalledTimes(1);
+    expect(limit).toHaveBeenCalledWith(2);
+    expect(result.map((item) => item.id)).toEqual(["artifact-2", "artifact-1"]);
+  });
 });

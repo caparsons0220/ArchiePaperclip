@@ -32,6 +32,32 @@ function toIssueWorkProduct(row: IssueWorkProductRow): IssueWorkProduct {
 
 export function workProductService(db: Db) {
   return {
+    listForCompany: async (
+      companyId: string,
+      filters?: {
+        type?: IssueWorkProduct["type"];
+        limit?: number;
+      },
+    ) => {
+      const query = db
+        .select()
+        .from(issueWorkProducts)
+        .where(
+          filters?.type
+            ? and(
+              eq(issueWorkProducts.companyId, companyId),
+              eq(issueWorkProducts.type, filters.type),
+            )
+            : eq(issueWorkProducts.companyId, companyId),
+        )
+        .orderBy(desc(issueWorkProducts.updatedAt));
+
+      const rows = filters?.limit && filters.limit > 0
+        ? await query.limit(filters.limit)
+        : await query;
+      return rows.map(toIssueWorkProduct);
+    },
+
     listForIssue: async (issueId: string) => {
       const rows = await db
         .select()

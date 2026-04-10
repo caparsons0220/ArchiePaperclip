@@ -8,6 +8,7 @@ interface PageSkeletonProps {
     | "dashboard"
     | "approvals"
     | "costs"
+    | "grid"
     | "inbox"
     | "org-chart";
 }
@@ -67,6 +68,26 @@ export function PageSkeleton({ variant = "list" }: PageSkeletonProps) {
         <div className="grid gap-4 md:grid-cols-2">
           <Skeleton className="h-72 w-full" />
           <Skeleton className="h-72 w-full" />
+        </div>
+      </div>
+    );
+  }
+
+  if (variant === "grid") {
+    return (
+      <div className="space-y-5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="space-y-2">
+            <Skeleton className="h-8 w-36" />
+            <Skeleton className="h-4 w-72" />
+          </div>
+          <Skeleton className="h-7 w-24" />
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={i} className="h-[28rem] w-full rounded-2xl" />
+          ))}
         </div>
       </div>
     );
