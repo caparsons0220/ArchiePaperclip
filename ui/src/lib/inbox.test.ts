@@ -28,15 +28,18 @@ import {
   isMineInboxTab,
   loadInboxFilterPreferences,
   loadInboxIssueColumns,
+  loadInboxWorkItemGroupBy,
   loadLastInboxTab,
   matchesInboxIssueSearch,
   normalizeInboxIssueColumns,
   RECENT_ISSUES_LIMIT,
   resolveInboxNestingEnabled,
   resolveIssueWorkspaceName,
+  resolveIssueWorkspaceGroup,
   resolveInboxSelectionIndex,
   saveInboxFilterPreferences,
   saveInboxIssueColumns,
+  saveInboxWorkItemGroupBy,
   saveLastInboxTab,
   shouldShowInboxSection,
   type InboxWorkItem,
@@ -575,6 +578,22 @@ describe("inbox helpers", () => {
     )).toBe(true);
   });
 
+  it("resolves the default workspace into an explicit grouping label", () => {
+    const issue = makeIssue("default", false);
+    issue.projectId = "project-1";
+    issue.projectWorkspaceId = "project-workspace-1";
+
+    expect(resolveIssueWorkspaceGroup(issue, {
+      projectWorkspaceById: new Map([
+        ["project-workspace-1", { name: "Primary workspace" }],
+      ]),
+      defaultProjectWorkspaceIdByProjectId: new Map([["project-1", "project-workspace-1"]]),
+    })).toEqual({
+      key: "workspace:project:project-workspace-1",
+      label: "Primary workspace (default)",
+    });
+  });
+
   it("returns archived search matches that are not already visible in the inbox", () => {
     const visibleIssue = makeIssue("visible", false);
     visibleIssue.title = "Alpha visible task";
@@ -938,5 +957,59 @@ describe("inbox helpers", () => {
       { key: "failed_run", label: "Failed runs", items: [items[3]] },
       { key: "join_request", label: "Join requests", items: [items[4]] },
     ]);
+  });
+
+  it("groups workspace sections by latest issue activity while preserving non-issue sections", () => {
+    const defaultIssue = makeIssue("default", true);
+    defaultIssue.projectId = "project-1";
+    defaultIssue.projectWorkspaceId = "project-workspace-1";
+
+    const sharedDefaultIssue = makeIssue("shared-default", true);
+    sharedDefaultIssue.projectId = "project-1";
+    sharedDefaultIssue.projectWorkspaceId = "project-workspace-1";
+    sharedDefaultIssue.executionWorkspaceId = "execution-workspace-shared-default";
+
+    const featureIssue = makeIssue("feature", false);
+    featureIssue.projectId = "project-1";
+    featureIssue.projectWorkspaceId = "project-workspace-2";
+
+    const execIssue = makeIssue("exec", false);
+    execIssue.projectId = "project-1";
+    execIssue.projectWorkspaceId = "project-workspace-1";
+    execIssue.executionWorkspaceId = "execution-workspace-1";
+
+    const items: InboxWorkItem[] = [
+      { kind: "issue", timestamp: 5, issue: defaultIssue },
+      { kind: "approval", timestamp: 2, approval: makeApproval("pending") },
+      { kind: "issue", timestamp: 4, issue: sharedDefaultIssue },
+      { kind: "issue", timestamp: 7, issue: featureIssue },
+      { kind: "issue", timestamp: 9, issue: execIssue },
+    ];
+
+    expect(groupInboxWorkItems(items, "workspace", {
+      executionWorkspaceById: new Map([
+        ["execution-workspace-1", { name: "Feature Branch", mode: "isolated_workspace", projectWorkspaceId: "project-workspace-1" }],
+        ["execution-workspace-shared-default", { name: "Shared default workspace", mode: "shared_workspace", projectWorkspaceId: "project-workspace-1" }],
+      ]),
+      projectWorkspaceById: new Map([
+        ["project-workspace-1", { name: "Primary workspace" }],
+        ["project-workspace-2", { name: "Secondary workspace" }],
+      ]),
+      defaultProjectWorkspaceIdByProjectId: new Map([["project-1", "project-workspace-1"]]),
+    })).toEqual([
+      { key: "workspace:execution:execution-workspace-1", label: "Feature Branch", items: [items[4]] },
+      { key: "workspace:project:project-workspace-2", label: "Secondary workspace", items: [items[3]] },
+      {
+        key: "workspace:project:project-workspace-1",
+        label: "Primary workspace (default)",
+        items: [items[0], items[2]],
+      },
+      { key: "kind:approval", label: "Approvals", items: [items[1]] },
+    ]);
+  });
+
+  it("persists workspace grouping preferences", () => {
+    saveInboxWorkItemGroupBy("workspace");
+    expect(loadInboxWorkItemGroupBy()).toBe("workspace");
   });
 });

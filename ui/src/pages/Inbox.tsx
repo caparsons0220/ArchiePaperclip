@@ -118,6 +118,7 @@ import {
   saveInboxIssueColumns,
   saveInboxNesting,
   saveInboxWorkItemGroupBy,
+  type InboxWorkspaceGroupingOptions,
   type InboxApprovalFilter,
   type InboxCategoryFilter,
   type InboxFilterPreferences,
@@ -152,11 +153,12 @@ function buildGroupedInboxSections(
   items: InboxWorkItem[],
   groupBy: InboxWorkItemGroupBy,
   nestingEnabled: boolean,
+  workspaceGrouping: InboxWorkspaceGroupingOptions,
   options?: { keyPrefix?: string; isArchivedSearch?: boolean },
 ): InboxGroupedSection[] {
   const keyPrefix = options?.keyPrefix ?? "";
   const isArchivedSearch = options?.isArchivedSearch ?? false;
-  return groupInboxWorkItems(items, groupBy).map((group) => {
+  return groupInboxWorkItems(items, groupBy, workspaceGrouping).map((group) => {
     const nestedGroup = nestingEnabled && group.items.some((item) => item.kind === "issue")
       ? buildInboxNesting(group.items)
       : { displayItems: group.items, childrenByIssueId: new Map<string, Issue[]>() };
@@ -877,6 +879,14 @@ export function Inbox() {
     }
     return map;
   }, [executionWorkspaces]);
+  const inboxWorkspaceGrouping = useMemo<InboxWorkspaceGroupingOptions>(
+    () => ({
+      executionWorkspaceById,
+      projectWorkspaceById,
+      defaultProjectWorkspaceIdByProjectId,
+    }),
+    [defaultProjectWorkspaceIdByProjectId, executionWorkspaceById, projectWorkspaceById],
+  );
   const visibleIssueColumnSet = useMemo(() => new Set(visibleIssueColumns), [visibleIssueColumns]);
   const availableIssueColumns = useMemo(
     () => getAvailableInboxIssueColumns(isolatedWorkspacesEnabled),
@@ -1078,6 +1088,11 @@ export function Inbox() {
   // --- Parent-child nesting for inbox issues ---
   const [nestingPreferenceEnabled, setNestingPreferenceEnabled] = useState(() => loadInboxNesting());
   const nestingEnabled = resolveInboxNestingEnabled(nestingPreferenceEnabled, isMobile);
+  useEffect(() => {
+    if (isolatedWorkspacesEnabled || groupBy !== "workspace") return;
+    setGroupBy("none");
+    saveInboxWorkItemGroupBy("none");
+  }, [groupBy, isolatedWorkspacesEnabled]);
   const toggleNesting = useCallback(() => {
     setNestingPreferenceEnabled((prev) => {
       const next = !prev;
@@ -1087,14 +1102,15 @@ export function Inbox() {
   }, []);
   const [collapsedInboxParents, setCollapsedInboxParents] = useState<Set<string>>(new Set());
   const groupedSections = useMemo<InboxGroupedSection[]>(() => [
-    ...buildGroupedInboxSections(effectiveWorkItems, groupBy, nestingEnabled),
+    ...buildGroupedInboxSections(effectiveWorkItems, groupBy, nestingEnabled, inboxWorkspaceGrouping),
     ...buildGroupedInboxSections(
       getInboxWorkItems({ issues: archivedSearchIssues, approvals: [] }),
       groupBy,
       nestingEnabled,
+      inboxWorkspaceGrouping,
       { keyPrefix: "archived-search:", isArchivedSearch: true },
     ),
-  ], [archivedSearchIssues, effectiveWorkItems, groupBy, nestingEnabled]);
+  ], [archivedSearchIssues, effectiveWorkItems, groupBy, inboxWorkspaceGrouping, nestingEnabled]);
   const totalVisibleWorkItems = useMemo(
     () => groupedSections.reduce((count, group) => count + group.displayItems.length, 0),
     [groupedSections],
@@ -1780,6 +1796,7 @@ export function Inbox() {
                 {([
                   ["none", "None"],
                   ["type", "Type"],
+                  ...(isolatedWorkspacesEnabled ? ([["workspace", "Workspace"]] as const) : []),
                 ] as const).map(([value, label]) => (
                   <button
                     key={value}
@@ -2065,11 +2082,17 @@ export function Inbox() {
                       <div
                         key={`group-${group.key}`}
                         className={cn(
-                          "border-b border-border/70 bg-muted/30 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground",
+                          "border-b border-border/70 bg-muted/30 px-3 py-2 sm:px-4",
                           groupIndex > 0 && "border-t border-border",
                         )}
                       >
-                        {group.label}
+                        <div className="flex min-w-0 items-center gap-2">
+                          <div className="h-px flex-1 bg-border/80" />
+                          <span className="max-w-[75vw] truncate rounded-full border border-border/70 bg-background/80 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground sm:max-w-none">
+                            {group.label}
+                          </span>
+                          <div className="h-px flex-1 bg-border/80" />
+                        </div>
                       </div>,
                     );
                   }
