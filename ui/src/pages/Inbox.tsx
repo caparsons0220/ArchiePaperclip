@@ -34,6 +34,7 @@ import { prefetchIssueDetail } from "../lib/issueDetailCache";
 import {
   hasBlockingShortcutDialog,
   isKeyboardShortcutTextInputTarget,
+  resolveInboxUndoArchiveKeyAction,
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
 } from "../lib/keyboardShortcuts";
@@ -1333,6 +1334,8 @@ export function Inbox() {
   const [fadingOutIssues, setFadingOutIssues] = useState<Set<string>>(new Set());
   const [showMarkAllReadConfirm, setShowMarkAllReadConfirm] = useState(false);
   const [archivingIssueIds, setArchivingIssueIds] = useState<Set<string>>(new Set());
+  const [undoableArchiveIssueIds, setUndoableArchiveIssueIds] = useState<string[]>([]);
+  const [unarchivingIssueIds, setUnarchivingIssueIds] = useState<Set<string>>(new Set());
   const [fadingNonIssueItems, setFadingNonIssueItems] = useState<Set<string>>(new Set());
   const [archivingNonIssueIds, setArchivingNonIssueIds] = useState<Set<string>>(new Set());
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
@@ -1387,9 +1390,37 @@ export function Inbox() {
         }
       }
     },
-    onSettled: (_data, error, id) => {
+    onSettled: (_data, _error, id) => {
       // Clean up archiving state and refetch to sync with server
       setArchivingIssueIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      invalidateInboxIssueQueries();
+    },
+    onSuccess: (_data, id) => {
+      setUndoableArchiveIssueIds((prev) => [...prev.filter((issueId) => issueId !== id), id]);
+    },
+  });
+
+  const unarchiveIssueMutation = useMutation({
+    mutationFn: (id: string) => issuesApi.unarchiveFromInbox(id),
+    onMutate: (id) => {
+      setActionError(null);
+      setUnarchivingIssueIds((prev) => new Set(prev).add(id));
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to undo inbox archive");
+    },
+    onSuccess: (_data, id) => {
+      setUndoableArchiveIssueIds((prev) => {
+        const next = prev.filter((issueId) => issueId !== id);
+        return next;
+      });
+    },
+    onSettled: (_data, _error, id) => {
+      setUnarchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
@@ -1498,6 +1529,11 @@ export function Inbox() {
     setSelectedIndex((prev) => resolveInboxSelectionIndex(prev, flatNavItems.length));
   }, [flatNavItems.length]);
 
+  useEffect(() => {
+    setUndoableArchiveIssueIds([]);
+    setUnarchivingIssueIds(new Set());
+  }, [selectedCompanyId]);
+
   // Use refs for keyboard handler to avoid stale closures
   const kbStateRef = useRef({
     workItems: groupedSections,
@@ -1506,6 +1542,8 @@ export function Inbox() {
     canArchive: canArchiveFromTab,
     archivedSearchIssueIds,
     archivingIssueIds,
+    undoableArchiveIssueIds,
+    unarchivingIssueIds,
     archivingNonIssueIds,
     fadingOutIssues,
     readItems,
@@ -1517,6 +1555,8 @@ export function Inbox() {
     canArchive: canArchiveFromTab,
     archivedSearchIssueIds,
     archivingIssueIds,
+    undoableArchiveIssueIds,
+    unarchivingIssueIds,
     archivingNonIssueIds,
     fadingOutIssues,
     readItems,
@@ -1524,6 +1564,7 @@ export function Inbox() {
 
   const kbActionsRef = useRef({
     archiveIssue: (id: string) => archiveIssueMutation.mutate(id),
+    undoArchiveIssue: (id: string) => unarchiveIssueMutation.mutate(id),
     archiveNonIssue: handleArchiveNonIssue,
     markRead: (id: string) => markReadMutation.mutate(id),
     markUnreadIssue: (id: string) => markUnreadMutation.mutate(id),
@@ -1533,6 +1574,7 @@ export function Inbox() {
   });
   kbActionsRef.current = {
     archiveIssue: (id: string) => archiveIssueMutation.mutate(id),
+    undoArchiveIssue: (id: string) => unarchiveIssueMutation.mutate(id),
     archiveNonIssue: handleArchiveNonIssue,
     markRead: (id: string) => markReadMutation.mutate(id),
     markUnreadIssue: (id: string) => markUnreadMutation.mutate(id),
@@ -1566,6 +1608,24 @@ export function Inbox() {
 
       // Keyboard shortcuts are only active on the "mine" tab
       if (!st.canArchive) return;
+
+      const undoArchiveAction = resolveInboxUndoArchiveKeyAction({
+        hasUndoableArchive: st.undoableArchiveIssueIds.length > 0,
+        defaultPrevented: e.defaultPrevented,
+        key: e.key,
+        metaKey: e.metaKey,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+        target,
+        hasOpenDialog: hasBlockingShortcutDialog(document),
+      });
+      if (undoArchiveAction === "undo_archive") {
+        const issueId = st.undoableArchiveIssueIds[st.undoableArchiveIssueIds.length - 1];
+        if (!issueId || st.unarchivingIssueIds.has(issueId)) return;
+        e.preventDefault();
+        act.undoArchiveIssue(issueId);
+        return;
+      }
 
       const navItems = st.flatNavItems;
       const navCount = navItems.length;
