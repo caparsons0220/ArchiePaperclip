@@ -229,6 +229,7 @@ export type {
   ProjectGoalRef,
   ProjectWorkspace,
   ExecutionWorkspace,
+  ExecutionWorkspaceSummary,
   ExecutionWorkspaceConfig,
   ExecutionWorkspaceCloseAction,
   ExecutionWorkspaceCloseActionKind,
