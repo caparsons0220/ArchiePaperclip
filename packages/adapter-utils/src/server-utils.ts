@@ -180,6 +180,17 @@ export function appendWithCap(prev: string, chunk: string, cap = MAX_CAPTURE_BYT
   return combined.length > cap ? combined.slice(combined.length - cap) : combined;
 }
 
+export function appendWithByteCap(prev: string, chunk: string, cap = MAX_CAPTURE_BYTES) {
+  const combined = prev + chunk;
+  const bytes = Buffer.byteLength(combined, "utf8");
+  if (bytes <= cap) return combined;
+
+  const buffer = Buffer.from(combined, "utf8");
+  let start = Math.max(0, bytes - cap);
+  while (start < buffer.length && (buffer[start]! & 0xc0) === 0x80) start += 1;
+  return buffer.subarray(start).toString("utf8");
+}
+
 function resumeReadable(readable: { resume: () => unknown; destroyed?: boolean } | null | undefined) {
   if (!readable || readable.destroyed) return;
   readable.resume();

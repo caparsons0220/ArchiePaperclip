@@ -25,7 +25,7 @@ import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -480,6 +480,15 @@ const heartbeatRunSafeColumns = {
   resultJson: heartbeatRunSafeResultJsonColumn,
 } as const;
 
+const heartbeatRunSqlAsciiSafeColumns = {
+  ...getTableColumns(heartbeatRuns),
+  processGroupId: heartbeatRunProcessGroupIdColumn,
+  error: sql<string | null>`NULL`.as("error"),
+  resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),
+  stdoutExcerpt: sql<string | null>`NULL`.as("stdoutExcerpt"),
+  stderrExcerpt: sql<string | null>`NULL`.as("stderrExcerpt"),
+} as const;
+
 const heartbeatRunLogAccessColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
@@ -500,7 +509,7 @@ const heartbeatRunIssueSummaryColumns = {
 } as const;
 
 function appendExcerpt(prev: string, chunk: string) {
-  return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
+  return appendWithByteCap(prev, chunk, MAX_EXCERPT_BYTES);
 }
 
 function truncateRunEventString(value: string) {
@@ -1609,6 +1618,26 @@ export function heartbeatService(db: Db) {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  let unsafeTextProjectionPromise: Promise<boolean> | null = null;
+
+  async function hasUnsafeTextProjectionDatabase() {
+    if (!unsafeTextProjectionPromise) {
+      unsafeTextProjectionPromise = db
+        .execute(sql`select current_setting('server_encoding') as server_encoding`)
+        .then((rows) => {
+          const first = Array.isArray(rows) ? rows[0] : null;
+          const serverEncoding = typeof first === "object" && first !== null
+            ? (first as Record<string, unknown>).server_encoding
+            : null;
+          return typeof serverEncoding === "string" && serverEncoding.toUpperCase() === "SQL_ASCII";
+        })
+        .catch((err) => {
+          logger.warn({ err }, "failed to inspect database server encoding; using conservative heartbeat result projection");
+          return true;
+        });
+    }
+    return unsafeTextProjectionPromise;
+  }
 
   async function getAgent(agentId: string) {
     return db
@@ -1619,8 +1648,15 @@ export function heartbeatService(db: Db) {
   }
 
   async function getRun(runId: string, opts?: { unsafeFullResultJson?: boolean }) {
+    const safeForLegacyEncoding = !opts?.unsafeFullResultJson && await hasUnsafeTextProjectionDatabase();
     return db
-      .select(opts?.unsafeFullResultJson ? getTableColumns(heartbeatRuns) : heartbeatRunSafeColumns)
+      .select(
+        opts?.unsafeFullResultJson
+          ? getTableColumns(heartbeatRuns)
+          : safeForLegacyEncoding
+            ? heartbeatRunSqlAsciiSafeColumns
+            : heartbeatRunSafeColumns,
+      )
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
@@ -5244,12 +5280,21 @@ export function heartbeatService(db: Db) {
 
   return {
     list: async (companyId: string, agentId?: string, limit?: number) => {
+      const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const query = db
-        .select({
-          ...heartbeatRunListColumns,
-          ...heartbeatRunListContextColumns,
-          ...heartbeatRunListResultColumns,
-        })
+        .select(
+          safeForLegacyEncoding
+            ? {
+                ...heartbeatRunListColumns,
+                error: sql<string | null>`NULL`.as("error"),
+                ...heartbeatRunListContextColumns,
+              }
+            : {
+                ...heartbeatRunListColumns,
+                ...heartbeatRunListContextColumns,
+                ...heartbeatRunListResultColumns,
+              },
+        )
         .from(heartbeatRuns)
         .where(
           agentId
@@ -5277,7 +5322,15 @@ export function heartbeatService(db: Db) {
           resultCostUsd,
           resultCostUsdCamel,
           ...rest
-        } = row;
+        } = row as typeof row & {
+          resultSummary?: string | null;
+          resultResult?: string | null;
+          resultMessage?: string | null;
+          resultError?: string | null;
+          resultTotalCostUsd?: string | null;
+          resultCostUsd?: string | null;
+          resultCostUsdCamel?: string | null;
+        };
 
         return {
           ...rest,
@@ -5291,15 +5344,17 @@ export function heartbeatService(db: Db) {
             wakeSource: contextWakeSource,
             wakeTriggerDetail: contextWakeTriggerDetail,
           }),
-          resultJson: summarizeHeartbeatRunListResultJson({
-            summary: resultSummary,
-            result: resultResult,
-            message: resultMessage,
-            error: resultError,
-            totalCostUsd: resultTotalCostUsd,
-            costUsd: resultCostUsd,
-            costUsdCamel: resultCostUsdCamel,
-          }),
+          resultJson: safeForLegacyEncoding
+            ? null
+            : summarizeHeartbeatRunListResultJson({
+                summary: resultSummary,
+                result: resultResult,
+                message: resultMessage,
+                error: resultError,
+                totalCostUsd: resultTotalCostUsd,
+                costUsd: resultCostUsd,
+                costUsdCamel: resultCostUsdCamel,
+              }),
         };
       });
     },
