@@ -317,10 +317,15 @@ function LiveRunWidgetStory({ empty = false, loading = false }: { empty?: boolea
 
 function OpenOnboardingOnMount({ initialStep }: { initialStep: 1 | 2 }) {
   const { openOnboarding } = useDialog();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
+    queryClient.setQueryData(queryKeys.agents.adapterModels(companyId, "claude_local"), [
+      { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
+      { id: "claude-opus-4-1", label: "Claude Opus 4.1" },
+    ]);
     openOnboarding(initialStep === 1 ? { initialStep } : { initialStep, companyId });
-  }, [initialStep, openOnboarding]);
+  }, [initialStep, openOnboarding, queryClient]);
 
   return <OnboardingWizard />;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type {
   DocumentRevision,
@@ -468,7 +468,10 @@ function clickButtonByText(text: string) {
 }
 
 function useOpenOnMount(open: () => void) {
-  useEffect(() => {
+  const didOpenRef = useRef(false);
+  useLayoutEffect(() => {
+    if (didOpenRef.current) return;
+    didOpenRef.current = true;
     open();
   }, [open]);
 }
