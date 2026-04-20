@@ -17,7 +17,7 @@ export const MISSIONS_UI_SLOT_IDS = [
 ] as const;
 
 const manifest: PaperclipPluginManifestV1 = {
-  id: "paperclipai.plugin-missions",
+  id: "paperclip.missions",
   apiVersion: 1,
   version: "0.1.0",
   displayName: "Missions",

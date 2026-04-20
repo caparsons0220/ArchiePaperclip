@@ -4,7 +4,7 @@ First-party Missions plugin package for the current Paperclip alpha plugin runti
 
 This package now carries the installable mission workflow surface:
 
-- manifest id `paperclipai.plugin-missions`
+- manifest id `paperclip.missions`
 - scoped plugin API routes under `/api/plugins/:pluginId/api/*`
 - namespace migrations for mission-owned tables
 - worker handlers for mission initialization, draft summary reads, and placeholder follow-up workflow routes
@@ -43,4 +43,5 @@ pnpm paperclipai plugin install ./packages/plugins/plugin-missions
 ```
 
 The host loads `dist/manifest.js`, `dist/worker.js`, and `dist/ui/`, so install
-after building.
+after building. Plugin install is board-only in the current runtime; agent API
+keys correctly receive `403 Board access required` for `/api/plugins/install`.

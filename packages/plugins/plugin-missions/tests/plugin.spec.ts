@@ -160,7 +160,7 @@ async function upsertMissionDocuments(
 describe("missions plugin package", () => {
   it("declares mission initialization surfaces", () => {
     expect(manifest).toMatchObject({
-      id: "paperclipai.plugin-missions",
+      id: "paperclip.missions",
       database: {
         namespaceSlug: "missions",
         migrationsDir: "migrations",
@@ -224,7 +224,7 @@ describe("missions plugin package", () => {
 
     const rootIssue = await harness.ctx.issues.get(rootIssueId, companyId);
     expect(rootIssue).toMatchObject({
-      originKind: "plugin:paperclipai.plugin-missions",
+      originKind: "plugin:paperclip.missions",
       originId: `mission:${rootIssueId}`,
       billingCode: `mission:${rootIssueId}`,
     });
