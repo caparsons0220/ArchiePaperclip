@@ -414,6 +414,17 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       ],
       summaryMarkdown: "Ship Phase 1 with tests and docs.",
     });
+
+    await expect(interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      answers: [
+        { questionId: "scope", optionIds: ["phase-2"] },
+      ],
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("Interaction has already been resolved");
   });
 
   it("reuses the existing interaction when the same idempotency key is submitted twice", async () => {

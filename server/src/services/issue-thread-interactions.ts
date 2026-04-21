@@ -1142,8 +1142,15 @@ export function issueThreadInteractionService(db: Db) {
           resolvedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(issueThreadInteractions.id, interactionId))
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
         .returning();
+
+      if (!updated) {
+        throw conflict("Interaction has already been resolved");
+      }
 
       await touchIssue(db, issue.id);
       return hydrateInteraction(updated);
