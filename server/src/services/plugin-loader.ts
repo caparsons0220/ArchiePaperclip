@@ -413,6 +413,11 @@ export interface PluginLoader {
   cleanupInstallArtifacts(plugin: PluginRecord): Promise<void>;
 
   /**
+   * Drop the host-managed restricted database namespace for a plugin purge.
+   */
+  cleanupDatabaseNamespace(plugin: PluginRecord): Promise<string[]>;
+
+  /**
    * Get the local plugin directory this loader is configured to use.
    */
   getLocalPluginDir(): string;
@@ -1425,6 +1430,10 @@ export function pluginLoader(
         if (!existsSync(target)) continue;
         await rm(target, { recursive: true, force: true });
       }
+    },
+
+    async cleanupDatabaseNamespace(plugin: PluginRecord): Promise<string[]> {
+      return pluginDatabaseService(migrationDb).purgeNamespace(plugin.id, plugin.manifestJson);
     },
 
     // -----------------------------------------------------------------------

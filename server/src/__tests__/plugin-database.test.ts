@@ -266,4 +266,42 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     await expect(pluginDb.applyMigrations(pluginId, pluginManifest, packageRoot))
       .rejects.toThrow(/checksum mismatch/i);
   });
+
+  it("purges retained namespace tables before a hard-delete reinstall", async () => {
+    const pluginManifest = manifest();
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
+    const packageRoot = await createPluginPackage(
+      pluginManifest,
+      `CREATE TABLE ${namespace}.mission_rows (id uuid PRIMARY KEY);`,
+    );
+    const pluginDb = pluginDatabaseService(db);
+    const firstPluginId = await installPluginRecord(pluginManifest);
+
+    await pluginDb.applyMigrations(firstPluginId, pluginManifest, packageRoot);
+    let tableExists = await db.execute(sql`
+      SELECT to_regclass(${`${namespace}.mission_rows`}) AS table_name
+    `);
+    expect(Array.from(tableExists as Iterable<{ table_name: string | null }>)[0]?.table_name)
+      .toBe(`${namespace}.mission_rows`);
+
+    const purged = await pluginDb.purgeNamespace(firstPluginId, pluginManifest);
+    expect(purged).toContain(namespace);
+    await db.delete(plugins).where(eq(plugins.id, firstPluginId));
+
+    tableExists = await db.execute(sql`
+      SELECT to_regclass(${`${namespace}.mission_rows`}) AS table_name
+    `);
+    expect(Array.from(tableExists as Iterable<{ table_name: string | null }>)[0]?.table_name)
+      .toBeNull();
+
+    const secondPluginId = await installPluginRecord(pluginManifest);
+    await expect(pluginDb.applyMigrations(secondPluginId, pluginManifest, packageRoot))
+      .resolves.toMatchObject({ namespaceName: namespace });
+
+    const migrations = await db
+      .select()
+      .from(pluginMigrations)
+      .where(and(eq(pluginMigrations.pluginId, secondPluginId), eq(pluginMigrations.status, "applied")));
+    expect(migrations).toHaveLength(1);
+  });
 });

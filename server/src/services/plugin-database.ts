@@ -51,6 +51,14 @@ function quoteIdentifier(value: string): string {
   return `"${assertIdentifier(value).replaceAll("\"", "\"\"")}"`;
 }
 
+function assertPluginNamespaceName(value: string): string {
+  assertIdentifier(value, "plugin namespace");
+  if (!value.startsWith("plugin_")) {
+    throw new Error(`Refusing to purge non-plugin database namespace: ${value}`);
+  }
+  return value;
+}
+
 function splitSqlStatements(input: string): string[] {
   const statements: string[] = [];
   let start = 0;
@@ -399,6 +407,34 @@ export function pluginDatabaseService(db: Db) {
 
   return {
     ensureNamespace,
+
+    async purgeNamespace(pluginId: string, manifest: PaperclipPluginManifestV1): Promise<string[]> {
+      if (!manifest.database) return [];
+
+      const expectedNamespace = derivePluginDatabaseNamespace(
+        manifest.id,
+        manifest.database.namespaceSlug,
+      );
+      const rows = await db
+        .select()
+        .from(pluginDatabaseNamespaces)
+        .where(eq(pluginDatabaseNamespaces.pluginId, pluginId));
+      const namespaceNames = new Set([
+        expectedNamespace,
+        ...rows.map((row) => row.namespaceName),
+      ]);
+
+      const purged: string[] = [];
+      for (const namespaceName of namespaceNames) {
+        const safeNamespace = assertPluginNamespaceName(namespaceName);
+        await db.execute(sql.raw(`DROP SCHEMA IF EXISTS ${quoteIdentifier(safeNamespace)} CASCADE`));
+        purged.push(safeNamespace);
+      }
+
+      await db.delete(pluginMigrations).where(eq(pluginMigrations.pluginId, pluginId));
+      await db.delete(pluginDatabaseNamespaces).where(eq(pluginDatabaseNamespaces.pluginId, pluginId));
+      return purged;
+    },
 
     async applyMigrations(pluginId: string, manifest: PaperclipPluginManifestV1, packageRoot: string) {
       if (!manifest.database) return null;
