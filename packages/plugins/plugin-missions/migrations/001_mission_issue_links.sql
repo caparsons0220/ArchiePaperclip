@@ -1,4 +1,4 @@
-CREATE TABLE plugin_missions_8ceb7cd69c.mission_issue_links (
+CREATE TABLE plugin_missions_8c47c0d099.mission_issue_links (
   mission_issue_id uuid NOT NULL REFERENCES public.issues(id) ON DELETE CASCADE,
   generated_issue_id uuid NOT NULL REFERENCES public.issues(id) ON DELETE CASCADE,
   generated_kind text NOT NULL,
