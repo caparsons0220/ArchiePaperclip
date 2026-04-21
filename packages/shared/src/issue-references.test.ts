@@ -39,6 +39,12 @@ describe("issue references", () => {
     ]);
   });
 
+  it("trims unmatched square brackets from issue path tokens", () => {
+    expect(findIssueReferenceMatches("See /issues/PAP-123] for context.")).toEqual([
+      { index: 4, length: 15, identifier: "PAP-123", matchedText: "/issues/PAP-123" },
+    ]);
+  });
+
   it("extracts and dedupes references from markdown", () => {
     expect(extractIssueReferenceIdentifiers("PAP-1 [again](/issues/pap-1) PAP-2")).toEqual(["PAP-1", "PAP-2"]);
   });

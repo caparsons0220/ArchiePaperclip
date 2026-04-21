@@ -31,4 +31,20 @@ END $$;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "issue_reference_mentions_company_source_issue_idx" ON "issue_reference_mentions" USING btree ("company_id","source_issue_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "issue_reference_mentions_company_target_issue_idx" ON "issue_reference_mentions" USING btree ("company_id","target_issue_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "issue_reference_mentions_company_issue_pair_idx" ON "issue_reference_mentions" USING btree ("company_id","source_issue_id","target_issue_id");--> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "issue_reference_mentions_company_source_mention_uq" ON "issue_reference_mentions" USING btree ("company_id","source_issue_id","target_issue_id","source_kind","source_record_id");
+DELETE FROM "issue_reference_mentions"
+WHERE "id" IN (
+	SELECT "id"
+	FROM (
+		SELECT
+			"id",
+			row_number() OVER (
+				PARTITION BY "company_id", "source_issue_id", "target_issue_id", "source_kind", "source_record_id"
+				ORDER BY "created_at", "id"
+			) AS "row_number"
+		FROM "issue_reference_mentions"
+	) AS "duplicates"
+	WHERE "duplicates"."row_number" > 1
+);--> statement-breakpoint
+DROP INDEX IF EXISTS "issue_reference_mentions_company_source_mention_uq";--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "issue_reference_mentions_company_source_mention_record_uq" ON "issue_reference_mentions" USING btree ("company_id","source_issue_id","target_issue_id","source_kind","source_record_id") WHERE "source_record_id" IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "issue_reference_mentions_company_source_mention_null_record_uq" ON "issue_reference_mentions" USING btree ("company_id","source_issue_id","target_issue_id","source_kind") WHERE "source_record_id" IS NULL;

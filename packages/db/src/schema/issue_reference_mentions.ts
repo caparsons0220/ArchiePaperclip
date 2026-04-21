@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
@@ -30,12 +31,18 @@ export const issueReferenceMentions = pgTable(
       table.sourceIssueId,
       table.targetIssueId,
     ),
-    companySourceMentionUq: uniqueIndex("issue_reference_mentions_company_source_mention_uq").on(
+    companySourceMentionWithRecordUq: uniqueIndex("issue_reference_mentions_company_source_mention_record_uq").on(
       table.companyId,
       table.sourceIssueId,
       table.targetIssueId,
       table.sourceKind,
       table.sourceRecordId,
-    ),
+    ).where(sql`${table.sourceRecordId} is not null`),
+    companySourceMentionWithoutRecordUq: uniqueIndex("issue_reference_mentions_company_source_mention_null_record_uq").on(
+      table.companyId,
+      table.sourceIssueId,
+      table.targetIssueId,
+      table.sourceKind,
+    ).where(sql`${table.sourceRecordId} is null`),
   }),
 );

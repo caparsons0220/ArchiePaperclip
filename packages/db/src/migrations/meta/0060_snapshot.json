@@ -8583,8 +8583,8 @@
           "method": "btree",
           "with": {}
         },
-        "issue_reference_mentions_company_source_mention_uq": {
-          "name": "issue_reference_mentions_company_source_mention_uq",
+        "issue_reference_mentions_company_source_mention_record_uq": {
+          "name": "issue_reference_mentions_company_source_mention_record_uq",
           "columns": [
             {
               "expression": "company_id",
@@ -8620,7 +8620,42 @@
           "isUnique": true,
           "concurrently": false,
           "method": "btree",
-          "with": {}
+          "with": {},
+          "where": "\"issue_reference_mentions\".\"source_record_id\" is not null"
+        },
+        "issue_reference_mentions_company_source_mention_null_record_uq": {
+          "name": "issue_reference_mentions_company_source_mention_null_record_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "target_issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {},
+          "where": "\"issue_reference_mentions\".\"source_record_id\" is null"
         }
       },
       "foreignKeys": {

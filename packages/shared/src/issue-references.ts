@@ -78,7 +78,10 @@ function trimTrailingPunctuation(token: string): string {
     const last = trimmed[trimmed.length - 1]!;
     if (!".,!?;:".includes(last) && last !== ")" && last !== "]") break;
 
-    if ((last === ")" || last === "]") && (trimmed.match(/\(/g)?.length ?? 0) >= (trimmed.match(/\)/g)?.length ?? 0)) {
+    if (
+      (last === ")" && (trimmed.match(/\(/g)?.length ?? 0) >= (trimmed.match(/\)/g)?.length ?? 0))
+      || (last === "]" && (trimmed.match(/\[/g)?.length ?? 0) >= (trimmed.match(/\]/g)?.length ?? 0))
+    ) {
       break;
     }
     trimmed = trimmed.slice(0, -1);

@@ -181,26 +181,30 @@ export function issueReferenceService(db: Db) {
   }
 
   async function syncIssue(issueId: string, dbOrTx: any = db) {
-    const issue = await issueById(issueId, dbOrTx);
-    if (!issue) throw notFound("Issue not found");
+    const runSync = async (tx: any) => {
+      const issue = await issueById(issueId, tx);
+      if (!issue) throw notFound("Issue not found");
 
-    await replaceSourceMentions({
-      companyId: issue.companyId,
-      sourceIssueId: issue.id,
-      sourceKind: "title",
-      sourceRecordId: null,
-      documentKey: null,
-      text: issue.title,
-    }, dbOrTx);
+      await replaceSourceMentions({
+        companyId: issue.companyId,
+        sourceIssueId: issue.id,
+        sourceKind: "title",
+        sourceRecordId: null,
+        documentKey: null,
+        text: issue.title,
+      }, tx);
 
-    await replaceSourceMentions({
-      companyId: issue.companyId,
-      sourceIssueId: issue.id,
-      sourceKind: "description",
-      sourceRecordId: null,
-      documentKey: null,
-      text: issue.description,
-    }, dbOrTx);
+      await replaceSourceMentions({
+        companyId: issue.companyId,
+        sourceIssueId: issue.id,
+        sourceKind: "description",
+        sourceRecordId: null,
+        documentKey: null,
+        text: issue.description,
+      }, tx);
+    };
+
+    return dbOrTx === db ? db.transaction(runSync) : runSync(dbOrTx);
   }
 
   async function syncComment(commentId: string, dbOrTx: any = db) {
