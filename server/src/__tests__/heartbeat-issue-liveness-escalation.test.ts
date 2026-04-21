@@ -71,7 +71,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
   let db: ReturnType<typeof createDb>;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase();
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-issue-liveness-");
     db = createDb(tempDb.url);
   }, 30_000);
 
