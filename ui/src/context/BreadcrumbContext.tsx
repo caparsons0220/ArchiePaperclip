@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { formatDocumentTitle } from "@/lib/branding";
 
 export interface Breadcrumb {
   label: string;
@@ -10,6 +11,8 @@ interface BreadcrumbContextValue {
   setBreadcrumbs: (crumbs: Breadcrumb[]) => void;
   mobileToolbar: ReactNode | null;
   setMobileToolbar: (node: ReactNode | null) => void;
+  pageToolbar: ReactNode | null;
+  setPageToolbar: (node: ReactNode | null) => void;
 }
 
 const BreadcrumbContext = createContext<BreadcrumbContextValue | null>(null);
@@ -28,6 +31,7 @@ function breadcrumbsEqual(left: Breadcrumb[], right: Breadcrumb[]) {
 export function BreadcrumbProvider({ children }: { children: ReactNode }) {
   const [breadcrumbs, setBreadcrumbsState] = useState<Breadcrumb[]>([]);
   const [mobileToolbar, setMobileToolbarState] = useState<ReactNode | null>(null);
+  const [pageToolbar, setPageToolbarState] = useState<ReactNode | null>(null);
 
   const setBreadcrumbs = useCallback((crumbs: Breadcrumb[]) => {
     setBreadcrumbsState((current) => (breadcrumbsEqual(current, crumbs) ? current : crumbs));
@@ -37,17 +41,18 @@ export function BreadcrumbProvider({ children }: { children: ReactNode }) {
     setMobileToolbarState(node);
   }, []);
 
+  const setPageToolbar = useCallback((node: ReactNode | null) => {
+    setPageToolbarState(node);
+  }, []);
+
   useEffect(() => {
-    if (breadcrumbs.length === 0) {
-      document.title = "Paperclip";
-    } else {
-      const parts = [...breadcrumbs].reverse().map((b) => b.label);
-      document.title = `${parts.join(" · ")} · Paperclip`;
-    }
+    document.title = formatDocumentTitle([...breadcrumbs].reverse().map((breadcrumb) => breadcrumb.label));
   }, [breadcrumbs]);
 
   return (
-    <BreadcrumbContext.Provider value={{ breadcrumbs, setBreadcrumbs, mobileToolbar, setMobileToolbar }}>
+    <BreadcrumbContext.Provider
+      value={{ breadcrumbs, setBreadcrumbs, mobileToolbar, setMobileToolbar, pageToolbar, setPageToolbar }}
+    >
       {children}
     </BreadcrumbContext.Provider>
   );

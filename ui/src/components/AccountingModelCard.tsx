@@ -1,5 +1,6 @@
 import { Database, Gauge, ReceiptText } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { PRODUCT_NAME } from "@/lib/branding";
 
 const SURFACES = [
   {
@@ -34,7 +35,7 @@ export function AccountingModelCard() {
           Accounting model
         </CardTitle>
         <CardDescription className="max-w-2xl text-sm leading-6">
-          Paperclip now separates request-level inference usage from account-level finance events.
+          {PRODUCT_NAME} now separates request-level inference usage from account-level finance events.
           That keeps provider reporting honest when the biller is OpenRouter, Cloudflare, Bedrock, or another intermediary.
         </CardDescription>
       </CardHeader>

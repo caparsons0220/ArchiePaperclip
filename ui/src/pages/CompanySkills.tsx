@@ -33,6 +33,8 @@ import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { PRODUCT_NAME } from "@/lib/branding";
+import { ArchieBravoMark } from "../components/ArchieBravoMark";
 import {
   Boxes,
   ChevronDown,
@@ -46,7 +48,6 @@ import {
   Github,
   Link2,
   ExternalLink,
-  Paperclip,
   Pencil,
   Plus,
   RefreshCw,
@@ -160,7 +161,7 @@ function sourceMeta(sourceBadge: CompanySkillSourceBadge, sourceLabel: string | 
     case "local":
       return { icon: Folder, label: sourceLabel ?? "Folder", managedLabel: "Folder managed" };
     case "paperclip":
-      return { icon: Paperclip, label: sourceLabel ?? "Paperclip", managedLabel: "Paperclip managed" };
+      return { icon: ArchieBravoMark, label: sourceLabel ?? PRODUCT_NAME, managedLabel: `${PRODUCT_NAME} managed` };
     default:
       return { icon: Boxes, label: sourceLabel ?? "Catalog", managedLabel: "Catalog managed" };
   }
@@ -919,7 +920,7 @@ export function CompanySkills() {
       pushToast({
         tone: "success",
         title: "Skill created",
-        body: `${skill.name} is now editable in the Paperclip workspace.`,
+        body: `${skill.name} is now editable in the ${PRODUCT_NAME} workspace.`,
       });
     },
     onError: (error) => {

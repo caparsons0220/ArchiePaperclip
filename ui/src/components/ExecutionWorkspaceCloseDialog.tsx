@@ -6,6 +6,7 @@ import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDateTime, issueUrl } from "../lib/utils";
+import { PRODUCT_NAME } from "@/lib/branding";
 import { Button } from "./ui/button";
 import {
   Dialog,
@@ -93,7 +94,7 @@ export function ExecutionWorkspaceCloseDialog({
           <DialogTitle>{actionLabel}</DialogTitle>
           <DialogDescription className="break-words">
             Archive <span className="font-medium text-foreground">{workspaceName}</span> and clean up any owned workspace
-            artifacts. Paperclip keeps the workspace record and issue history, but removes it from active workspace views.
+            artifacts. {PRODUCT_NAME} keeps the workspace record and issue history, but removes it from active workspace views.
           </DialogDescription>
         </DialogHeader>
 

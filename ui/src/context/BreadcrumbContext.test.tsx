@@ -45,12 +45,14 @@ describe("BreadcrumbContext", () => {
     });
 
     expect(renderCounts).toHaveLength(1);
+    expect(document.title).toBe("Archie Bravo");
 
     act(() => {
       updateBreadcrumbs?.([{ label: "Issues", href: "/issues" }, { label: "PAP-1488" }]);
     });
 
     expect(renderCounts).toHaveLength(2);
+    expect(document.title).toBe("PAP-1488 · Issues · Archie Bravo");
 
     act(() => {
       updateBreadcrumbs?.([{ label: "Issues", href: "/issues" }, { label: "PAP-1488" }]);

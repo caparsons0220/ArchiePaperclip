@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import { Paperclip, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   DndContext,
@@ -31,6 +31,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { Company } from "@paperclipai/shared";
+import { ArchieBravoMark } from "./ArchieBravoMark";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
 
 function SortableCompanyItem({
@@ -67,7 +68,7 @@ function SortableCompanyItem({
       <Tooltip delayDuration={300}>
         <TooltipTrigger asChild>
           <a
-            href={`/${company.issuePrefix}/dashboard`}
+            href={`/${company.issuePrefix}/home`}
             onClick={(e) => {
               if (isDragging) {
                 e.preventDefault();
@@ -200,9 +201,9 @@ export function CompanyRail() {
 
   return (
     <div className="flex flex-col items-center w-[72px] shrink-0 h-full bg-background border-r border-border">
-      {/* Paperclip icon - aligned with top sections (implied line, no visible border) */}
+      {/* Archie Bravo mark - aligned with top sections (implied line, no visible border) */}
       <div className="flex items-center justify-center h-12 w-full shrink-0">
-        <Paperclip className="h-5 w-5 text-foreground" />
+        <ArchieBravoMark className="h-6 w-6" />
       </div>
 
       {/* Company list */}
@@ -226,7 +227,7 @@ export function CompanyRail() {
                 onSelect={() => {
                   setSelectedCompanyId(company.id);
                   if (isInstanceRoute) {
-                    navigate(`/${company.issuePrefix}/dashboard`);
+                    navigate(`/${company.issuePrefix}/home`);
                   }
                 }}
               />

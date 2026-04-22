@@ -49,6 +49,7 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import type { RoutineListItem, RoutineVariable } from "@paperclipai/shared";
+import { PRODUCT_NAME } from "@/lib/branding";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
@@ -420,7 +421,7 @@ export function Routines() {
     onError: (mutationError) => {
       pushToast({
         title: "Failed to update routine",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not update the routine.",
+        body: mutationError instanceof Error ? mutationError.message : `${PRODUCT_NAME} could not update the routine.`,
         tone: "error",
       });
     },
@@ -455,7 +456,7 @@ export function Routines() {
     onError: (mutationError) => {
       pushToast({
         title: "Routine run failed",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not start the routine run.",
+        body: mutationError instanceof Error ? mutationError.message : `${PRODUCT_NAME} could not start the routine run.`,
         tone: "error",
       });
     },
@@ -874,7 +875,7 @@ export function Routines() {
 
           <div className="shrink-0 flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground">
-              After creation, Paperclip takes you straight to trigger setup. Draft routines stay paused until you add a default agent.
+              After creation, {PRODUCT_NAME} takes you straight to trigger setup. Draft routines stay paused until you add a default agent.
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button

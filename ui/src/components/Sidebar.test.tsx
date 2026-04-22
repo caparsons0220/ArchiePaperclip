@@ -150,4 +150,28 @@ describe("Sidebar", () => {
       root.unmount();
     });
   });
+
+  it("uses Home as the primary first nav destination", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Sidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const homeLink = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Home");
+    expect(homeLink?.getAttribute("href")).toBe("/home");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

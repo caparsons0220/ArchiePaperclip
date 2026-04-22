@@ -4,6 +4,7 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CompanyRootRedirect } from "./components/CompanyRootRedirect";
 import { CloudAccessGate } from "./components/CloudAccessGate";
 
 const mockHealthApi = vi.hoisted(() => ({
@@ -18,6 +19,12 @@ const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
 }));
 
+const companyState = vi.hoisted(() => ({
+  companies: [] as Array<{ id: string; issuePrefix: string; name: string }>,
+  selectedCompany: null as { id: string; issuePrefix: string; name: string } | null,
+  loading: false,
+}));
+
 vi.mock("./api/health", () => ({
   healthApi: mockHealthApi,
 }));
@@ -28,6 +35,16 @@ vi.mock("./api/auth", () => ({
 
 vi.mock("./api/access", () => ({
   accessApi: mockAccessApi,
+}));
+
+vi.mock("./context/CompanyContext", () => ({
+  useCompany: () => companyState,
+}));
+
+vi.mock("./context/DialogContext", () => ({
+  useDialog: () => ({
+    openOnboarding: vi.fn(),
+  }),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -55,6 +72,9 @@ describe("CloudAccessGate", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    companyState.companies = [];
+    companyState.selectedCompany = null;
+    companyState.loading = false;
     mockHealthApi.get.mockResolvedValue({
       status: "ok",
       deploymentMode: "authenticated",
@@ -138,6 +158,31 @@ describe("CloudAccessGate", () => {
 
     expect(container.textContent).toContain("Outlet content");
     expect(container.textContent).not.toContain("No company access");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("redirects the company root to the Archie home route", async () => {
+    companyState.companies = [{ id: "company-1", issuePrefix: "PAP", name: "Paperclip" }];
+    companyState.selectedCompany = companyState.companies[0]!;
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyRootRedirect />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Navigate:/PAP/home");
 
     await act(async () => {
       root.unmount();

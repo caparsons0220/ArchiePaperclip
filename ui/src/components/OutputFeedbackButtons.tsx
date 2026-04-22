@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ThumbsDown, ThumbsUp } from "lucide-react";
+import { FEEDBACK_SHARING_TARGET } from "@/lib/branding";
 import { cn } from "../lib/utils";
 
 export function OutputFeedbackButtons({
@@ -193,7 +194,7 @@ export function OutputFeedbackButtons({
           <DialogHeader>
             <DialogTitle>Save your feedback sharing preference</DialogTitle>
             <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs. This
+              Choose whether voted AI outputs can be shared with {FEEDBACK_SHARING_TARGET}. This
               answer becomes the default for future thumbs up and thumbs down votes.
             </DialogDescription>
           </DialogHeader>

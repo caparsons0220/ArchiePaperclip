@@ -133,8 +133,15 @@ function escapeHtmlAttribute(value: string): string {
 function createFaviconDataUrl(background: string, foreground: string): string {
   const svg = [
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">',
-    `<rect width="24" height="24" rx="6" fill="${background}"/>`,
-    `<path stroke="${foreground}" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.15" d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"/>`,
+    `<rect x="1.5" y="1.5" width="21" height="21" rx="5.5" fill="${background}"/>`,
+    `<rect x="2.8" y="2.8" width="18.4" height="18.4" rx="4.4" fill="${foreground}"/>`,
+    `<path d="M5.5 8.8C6.6 7.1 8.8 6.1 10.6 6.1" stroke="${background}" stroke-width="1.65" stroke-linecap="round"/>`,
+    `<path d="M13.4 6.1C15.2 6.1 17.4 7.1 18.5 8.8" stroke="${background}" stroke-width="1.65" stroke-linecap="round"/>`,
+    `<ellipse cx="9" cy="13.2" rx="2.2" ry="3.5" fill="${background}"/>`,
+    `<path d="M10.9 11.5L8.8 13.2L10.9 14.9Z" fill="${foreground}"/>`,
+    `<ellipse cx="15" cy="13.2" rx="2.2" ry="3.5" fill="${background}"/>`,
+    `<path d="M13.1 11.5L15.2 13.2L13.1 14.9Z" fill="${foreground}"/>`,
+    `<path d="M8.3 17.1C9.7 18.2 14.3 18.2 15.7 17.1C14.9 18.8 9.1 18.8 8.3 17.1Z" fill="${background}"/>`,
     "</svg>",
   ].join("");
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;

@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Paperclip",
-  "short_name": "Paperclip",
-  "description": "AI-powered project management and agent coordination platform",
+  "name": "Archie Bravo",
+  "short_name": "Archie Bravo",
+  "description": "Archie Bravo is an AI-powered project management and agent coordination platform",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

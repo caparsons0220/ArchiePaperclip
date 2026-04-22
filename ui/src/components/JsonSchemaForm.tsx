@@ -20,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PRODUCT_NAME } from "@/lib/branding";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -494,7 +495,7 @@ const SecretField = React.memo(({
       label={label}
       description={
         description ||
-        "This secret is stored securely via the Paperclip secret provider."
+        `This secret is stored securely via the ${PRODUCT_NAME} secret provider.`
       }
       required={isRequired}
       error={error}

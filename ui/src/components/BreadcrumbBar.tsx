@@ -23,7 +23,7 @@ function GlobalToolbarPlugins({ context }: { context: GlobalToolbarContext }) {
   const { launchers } = usePluginLaunchers({ placementZones: ["globalToolbarButton"], companyId: context.companyId, enabled: !!context.companyId });
   if (slots.length === 0 && launchers.length === 0) return null;
   return (
-    <div className="flex items-center gap-1 ml-auto shrink-0 pl-2">
+    <div className="ml-auto flex items-center gap-1 pl-2 shrink-0">
       <PluginSlotOutlet slotTypes={["globalToolbarButton"]} context={context} className="flex items-center gap-1" />
       <PluginLauncherOutlet placementZones={["globalToolbarButton"]} context={context} className="flex items-center gap-1" />
     </div>
@@ -31,7 +31,7 @@ function GlobalToolbarPlugins({ context }: { context: GlobalToolbarContext }) {
 }
 
 export function BreadcrumbBar() {
-  const { breadcrumbs, mobileToolbar } = useBreadcrumbs();
+  const { breadcrumbs, mobileToolbar, pageToolbar } = useBreadcrumbs();
   const { toggleSidebar, isMobile } = useSidebar();
   const { selectedCompanyId, selectedCompany } = useCompany();
 
@@ -44,6 +44,12 @@ export function BreadcrumbBar() {
   );
 
   const globalToolbarSlots = <GlobalToolbarPlugins context={globalToolbarSlotContext} />;
+  const rightToolbar = pageToolbar ? (
+    <div className="ml-auto flex items-center gap-2 pl-2 shrink-0">
+      <div className="flex items-center gap-1">{pageToolbar}</div>
+      {globalToolbarSlots}
+    </div>
+  ) : globalToolbarSlots;
 
   if (isMobile && mobileToolbar) {
     return (
@@ -55,8 +61,8 @@ export function BreadcrumbBar() {
 
   if (breadcrumbs.length === 0) {
     return (
-      <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center justify-end">
-        {globalToolbarSlots}
+      <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
+        {rightToolbar}
       </div>
     );
   }
@@ -83,7 +89,7 @@ export function BreadcrumbBar() {
             {breadcrumbs[0].label}
           </h1>
         </div>
-        {globalToolbarSlots}
+        {rightToolbar}
       </div>
     );
   }
@@ -115,7 +121,7 @@ export function BreadcrumbBar() {
           </BreadcrumbList>
         </Breadcrumb>
       </div>
-      {globalToolbarSlots}
+      {rightToolbar}
     </div>
   );
 }

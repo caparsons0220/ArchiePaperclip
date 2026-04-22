@@ -14,6 +14,7 @@ import {
 } from "../components/WorkspaceRuntimeControls";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { PRODUCT_NAME } from "../lib/branding";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
 
@@ -37,7 +38,7 @@ type ProjectWorkspaceSourceType = ProjectWorkspace["sourceType"];
 type ProjectWorkspaceVisibility = ProjectWorkspace["visibility"];
 
 const SOURCE_TYPE_OPTIONS: Array<{ value: ProjectWorkspaceSourceType; label: string; description: string }> = [
-  { value: "local_path", label: "Local git checkout", description: "A local path Paperclip can use directly." },
+  { value: "local_path", label: "Local git checkout", description: `A local path ${PRODUCT_NAME} can use directly.` },
   { value: "non_git_path", label: "Local non-git path", description: "A local folder without git semantics." },
   { value: "git_repo", label: "Remote git repo", description: "A repo URL with optional refs and local checkout." },
   { value: "remote_managed", label: "Remote-managed workspace", description: "A hosted workspace tracked by external reference." },
@@ -388,9 +389,9 @@ export function ProjectWorkspaceDetail() {
                 </div>
                 <h1 className="text-2xl font-semibold">{workspace.name}</h1>
                 <p className="max-w-2xl text-sm text-muted-foreground">
-                  Configure the concrete workspace Paperclip attaches to this project. These values drive per-workspace
-                  checkout behavior, default runtime services for child execution workspaces, and let you override setup
-                  or cleanup commands when one workspace needs special handling.
+                  Configure the concrete workspace {PRODUCT_NAME} attaches to this project. These values drive
+                  per-workspace checkout behavior, default runtime services for child execution workspaces, and let you
+                  override setup or cleanup commands when one workspace needs special handling.
                 </p>
               </div>
               {!workspace.isPrimary ? (
@@ -548,7 +549,8 @@ export function ProjectWorkspaceDetail() {
               <details className="rounded-xl border border-dashed border-border/70 bg-background px-3 py-3">
                 <summary className="cursor-pointer text-sm font-medium">Advanced runtime JSON</summary>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  Paperclip derives Services and Jobs from this JSON. Prefer editing named commands first; use raw JSON for advanced lifecycle, port, readiness, or environment settings.
+                  {PRODUCT_NAME} derives Services and Jobs from this JSON. Prefer editing named commands first; use raw
+                  JSON for advanced lifecycle, port, readiness, or environment settings.
                 </p>
                 <div className="mt-3">
                   <Field label="Workspace commands JSON" hint="Execution workspaces inherit this config unless they override it. Legacy `services` arrays still work, but `commands` supports both services and jobs.">

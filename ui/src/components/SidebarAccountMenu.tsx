@@ -18,10 +18,10 @@ import { useSidebar } from "../context/SidebarContext";
 import { useTheme } from "../context/ThemeContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { PRODUCT_DOCS_URL, PRODUCT_NAME, formatVersionLabel } from "@/lib/branding";
 import { cn } from "../lib/utils";
 
 const PROFILE_SETTINGS_PATH = "/instance/settings/profile";
-const DOCS_URL = "https://docs.paperclip.ing/";
 
 interface SidebarAccountMenuProps {
   deploymentMode?: DeploymentMode;
@@ -179,9 +179,7 @@ export function SidebarAccountMenu({
                   </span>
                 </div>
                 <p className="truncate text-sm text-muted-foreground">{secondaryLabel}</p>
-                {version ? (
-                  <p className="mt-1 text-xs text-muted-foreground">Paperclip v{version}</p>
-                ) : null}
+                {version ? <p className="mt-1 text-xs text-muted-foreground">{formatVersionLabel(version)}</p> : null}
               </div>
             </div>
 
@@ -207,14 +205,16 @@ export function SidebarAccountMenu({
                 href={instanceSettingsTarget}
                 onClick={closeNavigationChrome}
               />
-              <MenuAction
-                label="Documentation"
-                description="Open Paperclip docs in a new tab."
-                icon={BookOpen}
-                href={DOCS_URL}
-                external
-                onClick={() => setOpen(false)}
-              />
+              {PRODUCT_DOCS_URL ? (
+                <MenuAction
+                  label="Documentation"
+                  description={`Open ${PRODUCT_NAME} docs in a new tab.`}
+                  icon={BookOpen}
+                  href={PRODUCT_DOCS_URL}
+                  external
+                  onClick={() => setOpen(false)}
+                />
+              ) : null}
               <MenuAction
                 label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
                 description="Toggle the app appearance."

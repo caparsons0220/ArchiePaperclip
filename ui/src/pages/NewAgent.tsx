@@ -24,6 +24,7 @@ import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { isValidAdapterType } from "../adapters/metadata";
 import { ReportsToPicker } from "../components/ReportsToPicker";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
+import { PRODUCT_NAME } from "../lib/branding";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -278,7 +279,8 @@ export function NewAgent() {
             <div>
               <h2 className="text-sm font-medium">Company skills</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Optional skills from the company library. Built-in Paperclip runtime skills are added automatically.
+                Optional skills from the company library. Built-in {PRODUCT_NAME} runtime skills are added
+                automatically.
               </p>
             </div>
             {availableSkills.length === 0 ? (

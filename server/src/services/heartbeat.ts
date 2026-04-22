@@ -2103,7 +2103,7 @@ export function heartbeatService(db: Db) {
       readNonEmptyString(latestRun.error);
 
     const handoffMarkdown = [
-      "Paperclip session handoff:",
+      "Archie Bravo session handoff:",
       `- Previous session: ${sessionId}`,
       issueId ? `- Issue: ${issueId}` : "",
       `- Rotation reason: ${reason}`,
@@ -4074,7 +4074,7 @@ export function heartbeatService(db: Db) {
         [
           "## Assigned Orphan Blocker",
           "",
-          `Paperclip found this issue is blocking ${blockingLinks} but had no assignee, so no heartbeat could pick it up.`,
+          `Archie Bravo found this issue is blocking ${blockingLinks} but had no assignee, so no heartbeat could pick it up.`,
           "",
           "- Assigned it back to the agent that created the blocker.",
           "- Next action: resolve this blocker or reassign it to the right owner.",
@@ -4223,7 +4223,7 @@ export function heartbeatService(db: Db) {
             previousStatus: "todo",
             latestRun,
             comment:
-              "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
+              "Archie Bravo automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
               `but it still has no live execution path.${failureSummary ?? ""} ` +
               "Moving it to `blocked` so it is visible for intervention.",
           });
@@ -4264,7 +4264,7 @@ export function heartbeatService(db: Db) {
           previousStatus: "in_progress",
           latestRun,
           comment:
-            "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
+            "Archie Bravo automatically retried continuation for this assigned `in_progress` issue after its live " +
             `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
             "Moving it to `blocked` so it is visible for intervention.",
         });
@@ -4431,7 +4431,7 @@ export function heartbeatService(db: Db) {
 
   function buildLivenessEscalationDescription(finding: IssueLivenessFinding) {
     return [
-      "Paperclip detected a harness-level issue graph liveness incident.",
+      "Archie Bravo detected a harness-level issue graph liveness incident.",
       "",
       `- Incident key: \`${finding.incidentKey}\``,
       `- Finding: \`${finding.state}\``,
@@ -4445,7 +4445,7 @@ export function heartbeatService(db: Db) {
 
   function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escalation: typeof issues.$inferSelect) {
     return [
-      "Paperclip detected a harness-level liveness incident in this issue's dependency graph.",
+      "Archie Bravo detected a harness-level liveness incident in this issue's dependency graph.",
       "",
       `- Escalation issue: ${escalation.identifier ?? escalation.id}`,
       `- Incident key: \`${finding.incidentKey}\``,
@@ -5836,14 +5836,14 @@ export function heartbeatService(db: Db) {
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
     if (input.status === "todo") {
       return (
-        "Paperclip automatically retried dispatch for this assigned `todo` issue during terminal run recovery, " +
+        "Archie Bravo automatically retried dispatch for this assigned `todo` issue during terminal run recovery, " +
         `but it still has no live execution path.${failureSummary ?? ""} ` +
         "Moving it to `blocked` so it is visible for intervention."
       );
     }
 
     return (
-      "Paperclip automatically retried continuation for this assigned `in_progress` issue during terminal run " +
+      "Archie Bravo automatically retried continuation for this assigned `in_progress` issue during terminal run " +
       `recovery, but it still has no live execution path.${failureSummary ?? ""} ` +
       "Moving it to `blocked` so it is visible for intervention."
     );

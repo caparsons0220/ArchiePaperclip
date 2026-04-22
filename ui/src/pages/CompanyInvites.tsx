@@ -9,6 +9,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { Link } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
+import { PRODUCT_NAME } from "@/lib/branding";
 
 const inviteRoleOptions = [
   {
@@ -81,7 +82,7 @@ export function CompanyInvites() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Company", href: "/home" },
       { label: "Settings", href: "/company/settings" },
       { label: "Invites" },
     ]);
@@ -248,7 +249,7 @@ export function CompanyInvites() {
                 ) : null}
               </div>
               <div className="text-sm text-muted-foreground">
-                This URL includes the current Paperclip domain returned by the server.
+                This URL includes the current {PRODUCT_NAME} domain returned by the server.
               </div>
             </div>
             <button

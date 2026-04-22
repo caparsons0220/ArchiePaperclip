@@ -14,6 +14,7 @@ import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { clearPendingInviteToken, rememberPendingInviteToken } from "../lib/invite-memory";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDate } from "../lib/utils";
+import { PRODUCT_NAME } from "@/lib/branding";
 
 type AuthMode = "sign_in" | "sign_up";
 type AuthFeedback = { tone: "error" | "info"; message: string };
@@ -80,7 +81,7 @@ function mapInviteAuthFeedback(
     return {
       tone: "error",
       message:
-        "That email and password did not match an existing Paperclip account. Check both fields, or create an account first if you are new here.",
+        `That email and password did not match an existing ${PRODUCT_NAME} account. Check both fields, or create an account first if you are new here.`,
     };
   }
 
@@ -88,7 +89,7 @@ function mapInviteAuthFeedback(
     return {
       tone: "error",
       message:
-        "That email and password did not match an existing Paperclip account. Check both fields, or create an account first if you are new here.",
+        `That email and password did not match an existing ${PRODUCT_NAME} account. Check both fields, or create an account first if you are new here.`,
     };
   }
 
@@ -284,7 +285,7 @@ export function InviteLandingPage() {
       companiesQuery.data?.some((company) => company.id === invite?.companyId),
     );
   const companyName = invite?.companyName?.trim() || null;
-  const companyDisplayName = companyName || "this Paperclip company";
+  const companyDisplayName = companyName || `this ${PRODUCT_NAME} company`;
   const companyLogoUrl = invite?.companyLogoUrl?.trim() || null;
   const companyBrandColor = invite?.companyBrandColor?.trim() || null;
   const invitedByUserName = invite?.invitedByUserName?.trim() || null;
@@ -551,16 +552,16 @@ export function InviteLandingPage() {
               />
               <div className="min-w-0">
                 <p className="text-xs uppercase tracking-[0.24em] text-zinc-500">
-                  You&apos;ve been invited to join Paperclip
+                  You&apos;ve been invited to join {PRODUCT_NAME}
                 </p>
                 <h1 className="mt-2 text-2xl font-semibold">
-                  {invite.inviteType === "bootstrap_ceo" ? "Set up Paperclip" : `Join ${companyDisplayName}`}
+                  {invite.inviteType === "bootstrap_ceo" ? `Set up ${PRODUCT_NAME}` : `Join ${companyDisplayName}`}
                 </h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-300">
                   {showsAgentForm
                     ? "Review the invite details, then submit the agent information below to start the join request."
                     : requiresHumanAccount
-                      ? "Create your Paperclip account first. If you already have one, switch to sign in and continue the invite with the same email."
+                      ? `Create your ${PRODUCT_NAME} account first. If you already have one, switch to sign in and continue the invite with the same email.`
                       : "Your account is ready. Review the invite details, then accept it to continue."}
                 </p>
               </div>
@@ -573,7 +574,7 @@ export function InviteLandingPage() {
               </div>
               <div className="border border-zinc-800 p-3">
                 <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Invited by</div>
-                <div className="mt-1 text-sm text-zinc-100">{invitedByUserName ?? "Paperclip board"}</div>
+                <div className="mt-1 text-sm text-zinc-100">{invitedByUserName ?? `${PRODUCT_NAME} board`}</div>
               </div>
               <div className="border border-zinc-800 p-3">
                 <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Requested access</div>
@@ -658,8 +659,8 @@ export function InviteLandingPage() {
                   </h2>
                   <p className="mt-1 text-sm text-zinc-400">
                     {authMode === "sign_up"
-                      ? `Start with a Paperclip account. After that, you'll come right back here to accept the invite for ${companyDisplayName}.`
-                      : "Use the Paperclip account that already matches this invite. If you do not have one yet, switch back to create account."}
+                      ? `Start with an ${PRODUCT_NAME} account. After that, you'll come right back here to accept the invite for ${companyDisplayName}.`
+                      : `Use the ${PRODUCT_NAME} account that already matches this invite. If you do not have one yet, switch back to create account.`}
                   </p>
                 </div>
 
@@ -779,7 +780,7 @@ export function InviteLandingPage() {
 
                 <p className="text-xs leading-5 text-zinc-500">
                   {authMode === "sign_up"
-                    ? "Already signed up before? Use the existing-account option instead so the invite lands on the right Paperclip user."
+                    ? `Already signed up before? Use the existing-account option instead so the invite lands on the right ${PRODUCT_NAME} user.`
                     : "No account yet? Switch back to create account so you can accept the invite with a new login."}
                 </p>
               </div>
@@ -799,7 +800,7 @@ export function InviteLandingPage() {
                       : isCurrentMember
                       ? `This account already belongs to ${companyDisplayName}.`
                       : `This will ${
-                          invite.inviteType === "bootstrap_ceo" ? "finish setting up Paperclip" : `submit or complete your join request for ${companyDisplayName}`
+                          invite.inviteType === "bootstrap_ceo" ? `finish setting up ${PRODUCT_NAME}` : `submit or complete your join request for ${companyDisplayName}`
                         }.`}
                   </p>
                 </div>

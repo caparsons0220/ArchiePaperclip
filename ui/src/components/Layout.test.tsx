@@ -17,7 +17,7 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSetSelectedCompanyId = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
-let currentPathname = "/PAP/dashboard";
+let currentPathname = "/PAP/home";
 
 vi.mock("@/lib/router", () => ({
   Outlet: () => <div>Outlet content</div>,
@@ -174,7 +174,7 @@ describe("Layout", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    currentPathname = "/PAP/dashboard";
+    currentPathname = "/PAP/home";
     mockHealthApi.get.mockResolvedValue({
       status: "ok",
       deploymentMode: "authenticated",

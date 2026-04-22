@@ -106,8 +106,8 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(document.body.textContent).toContain("Edit profile");
-    expect(document.body.textContent).toContain("Documentation");
-    expect(document.body.textContent).toContain("Paperclip v1.2.3");
+    expect(document.body.textContent).not.toContain("Documentation");
+    expect(document.body.textContent).toContain("Archie Bravo v1.2.3");
     expect(document.body.textContent).toContain("jane@example.com");
 
     await act(async () => {

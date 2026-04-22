@@ -1,8 +1,10 @@
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import { CompanyRootRedirect, NoCompaniesStartPage } from "./components/CompanyRootRedirect";
 import { Layout } from "./components/Layout";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { CloudAccessGate } from "./components/CloudAccessGate";
+import { Home } from "./pages/Home";
 import { Dashboard } from "./pages/Dashboard";
 import { Companies } from "./pages/Companies";
 import { Agents } from "./pages/Agents";
@@ -52,11 +54,13 @@ import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
 import { shouldRedirectCompanylessRouteToOnboarding } from "./lib/onboarding-route";
+import { PRODUCT_NAME } from "./lib/branding";
 
 function boardRoutes() {
   return (
     <>
-      <Route index element={<Navigate to="dashboard" replace />} />
+      <Route index element={<Navigate to="home" replace />} />
+      <Route path="home" element={<Home />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
@@ -152,7 +156,7 @@ function OnboardingRoutePage() {
     ? "Run onboarding again to add an agent and a starter task for this company."
     : companies.length > 0
       ? "Run onboarding again to create another company and seed its first agent."
-      : "Get started by creating a company and your first agent.";
+      : `Get started in ${PRODUCT_NAME} by creating a company and your first agent.`;
 
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -173,30 +177,6 @@ function OnboardingRoutePage() {
       </div>
     </div>
   );
-}
-
-function CompanyRootRedirect() {
-  const { companies, selectedCompany, loading } = useCompany();
-  const location = useLocation();
-
-  if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
-  }
-
-  const targetCompany = selectedCompany ?? companies[0] ?? null;
-  if (!targetCompany) {
-    if (
-      shouldRedirectCompanylessRouteToOnboarding({
-        pathname: location.pathname,
-        hasCompanies: false,
-      })
-    ) {
-      return <Navigate to="/onboarding" replace />;
-    }
-    return <NoCompaniesStartPage />;
-  }
-
-  return <Navigate to={`/${targetCompany.issuePrefix}/dashboard`} replace />;
 }
 
 function UnprefixedBoardRedirect() {
@@ -228,24 +208,6 @@ function UnprefixedBoardRedirect() {
   );
 }
 
-function NoCompaniesStartPage() {
-  const { openOnboarding } = useDialog();
-
-  return (
-    <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Create your first company</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Get started by creating a company.
-        </p>
-        <div className="mt-4">
-          <Button onClick={() => openOnboarding()}>New Company</Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function App() {
   return (
     <>
@@ -258,6 +220,8 @@ export function App() {
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
           <Route path="onboarding" element={<OnboardingRoutePage />} />
+          <Route path="home" element={<UnprefixedBoardRedirect />} />
+          <Route path="dashboard" element={<UnprefixedBoardRedirect />} />
           <Route path="instance" element={<Navigate to="/instance/settings/general" replace />} />
           <Route path="instance/settings" element={<Layout />}>
             <Route index element={<Navigate to="general" replace />} />

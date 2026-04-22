@@ -119,6 +119,7 @@ import {
   type IssueAttachment,
   type IssueComment,
 } from "@paperclipai/shared";
+import { FEEDBACK_TERMS_URL } from "@/lib/branding";
 
 type CommentReassignment = IssueCommentReassignment;
 type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
@@ -129,7 +130,6 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   queueTargetRunId?: string | null;
 };
 
-const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 const ISSUE_COMMENT_PAGE_SIZE = 50;
 
 function resolveRunningIssueRun(

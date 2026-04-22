@@ -1407,8 +1407,8 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
   if (metadata.sourceKind === "paperclip_bundled") {
     return {
       editable: false,
-      editableReason: "Bundled Paperclip skills are read-only.",
-      sourceLabel: "Paperclip bundled",
+      editableReason: "Bundled Archie Bravo skills are read-only.",
+      sourceLabel: "Archie Bravo bundled",
       sourceBadge: "paperclip",
       sourcePath: null,
     };
@@ -1457,7 +1457,7 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
       return {
         editable: true,
         editableReason: null,
-        sourceLabel: "Paperclip workspace",
+        sourceLabel: "Archie Bravo workspace",
         sourceBadge: "paperclip",
         sourcePath: managedRoot,
       };
@@ -2165,7 +2165,7 @@ export function companySkillService(db: Db) {
         source,
         required,
         requiredReason: required
-          ? "Bundled Paperclip skills are always available for local adapters."
+          ? "Bundled Archie Bravo skills are always available for local adapters."
           : null,
       });
     }
