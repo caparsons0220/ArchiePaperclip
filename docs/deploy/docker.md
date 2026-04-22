@@ -48,6 +48,23 @@ All data is persisted under the bind mount (`./data/docker-paperclip`):
 - Local secrets key
 - Agent workspace data
 
+## Hostinger Public Deployment
+
+For one public Archie/Paperclip instance on a Hostinger VPS, use:
+
+- `docker/docker-compose.hostinger.yml`
+- `docker/.env.hostinger.example`
+
+That path is tuned for:
+
+- `authenticated` + `public`
+- separate app + PostgreSQL containers
+- reverse proxying through a label-aware proxy such as Traefik
+- a canonical public URL such as `https://app.archiebravo.com`
+- automatic Codex CLI API-key login when `OPENAI_API_KEY` is present
+
+See [Hostinger Public Deployment](./hostinger-public) for the full flow.
+
 ## Claude and Codex Adapters in Docker
 
 The Docker image pre-installs:

@@ -88,6 +88,25 @@ BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
 
 PostgreSQL data persists in a named Docker volume (`pgdata`). Paperclip data persists in `paperclip-data`.
 
+### Hostinger public deployment
+
+For one public Archie/Paperclip instance on a Hostinger VPS, use the dedicated production compose file:
+
+```sh
+docker compose --env-file docker/.env.hostinger.example \
+  -f docker/docker-compose.hostinger.yml config
+```
+
+That deployment path is designed for:
+
+- `authenticated/public`
+- separate app + PostgreSQL containers
+- a reverse proxy that reads Docker labels, such as Traefik on the VPS
+- a single canonical public URL such as `https://app.archiebravo.com`
+- automatic Codex CLI API-key login when `OPENAI_API_KEY` is present
+
+See [HOSTINGER.md](./HOSTINGER.md) for the step-by-step Hostinger flow.
+
 ### Untrusted PR review
 
 Isolated container for reviewing untrusted pull requests with Codex or Claude, without exposing your host machine. See `doc/UNTRUSTED-PR-REVIEW.md` for the full workflow.

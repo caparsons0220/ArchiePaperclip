@@ -1,0 +1,39 @@
+name: Deploy Hostinger
+
+on:
+  # Manual-first on purpose. After the first production deployment is healthy,
+  # add a push trigger for the branch you want to publish automatically.
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy to Hostinger
+        uses: hostinger/deploy-action@v1
+        with:
+          api-key: ${{ secrets.HOSTINGER_API_KEY }}
+          virtual-machine: ${{ vars.HOSTINGER_VM_ID }}
+          project-name: ${{ vars.HOSTINGER_PROJECT_NAME || 'archie-bravo' }}
+          docker-compose-path: docker/docker-compose.hostinger.yml
+          personal-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          environment-variables: |
+            PAPERCLIP_PUBLIC_URL=${{ vars.PAPERCLIP_PUBLIC_URL }}
+            ARCHIE_HOSTNAME=${{ vars.ARCHIE_HOSTNAME }}
+            TRAEFIK_CERT_RESOLVER=${{ vars.TRAEFIK_CERT_RESOLVER || 'letsencrypt' }}
+            PAPERCLIP_DEPLOYMENT_MODE=authenticated
+            PAPERCLIP_DEPLOYMENT_EXPOSURE=public
+            BETTER_AUTH_SECRET=${{ secrets.BETTER_AUTH_SECRET }}
+            ARCHIE_DB_NAME=${{ vars.ARCHIE_DB_NAME || 'paperclip' }}
+            ARCHIE_DB_USER=${{ vars.ARCHIE_DB_USER || 'paperclip' }}
+            ARCHIE_DB_PASSWORD=${{ secrets.ARCHIE_DB_PASSWORD }}
+            PAPERCLIP_AUTH_DISABLE_SIGN_UP=${{ vars.PAPERCLIP_AUTH_DISABLE_SIGN_UP || 'false' }}
+            PAPERCLIP_ALLOWED_HOSTNAMES=${{ vars.PAPERCLIP_ALLOWED_HOSTNAMES }}
+            OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+            ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
