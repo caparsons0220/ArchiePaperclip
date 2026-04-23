@@ -37,22 +37,15 @@ describe("GET /health dev-server supervisor access", () => {
     });
     process.env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN = "dev-runner-token";
 
-    let selectCall = 0;
-    const db = {
-      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
-      select: vi.fn(() => {
-        selectCall += 1;
-        if (selectCall === 1) {
-          return {
-            from: vi.fn(() => ({
-              where: vi.fn().mockResolvedValue([{ count: 1 }]),
-            })),
-          };
-        }
-        if (selectCall === 2) {
-          return {
-            from: vi.fn(() => ({
-              where: vi.fn().mockResolvedValue([
+      let selectCall = 0;
+      const db = {
+        execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+        select: vi.fn(() => {
+          selectCall += 1;
+          if (selectCall === 1) {
+            return {
+              from: vi.fn(() => ({
+                where: vi.fn().mockResolvedValue([
                 {
                   id: "settings-1",
                   general: {},
@@ -60,10 +53,10 @@ describe("GET /health dev-server supervisor access", () => {
                   createdAt: new Date("2026-03-20T11:00:00.000Z"),
                   updatedAt: new Date("2026-03-20T11:00:00.000Z"),
                 },
-              ]),
-            })),
-          };
-        }
+                ]),
+              })),
+            };
+          }
         return {
           from: vi.fn(() => ({
             where: vi.fn().mockResolvedValue([{ count: 0 }]),
