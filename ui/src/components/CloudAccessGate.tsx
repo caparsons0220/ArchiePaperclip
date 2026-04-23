@@ -3,43 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
+import { shouldRedirectCompanylessRouteToOnboarding } from "@/lib/onboarding-route";
 import { queryKeys } from "@/lib/queryKeys";
-import { PRODUCT_NAME } from "@/lib/branding";
-
-function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
-  return (
-    <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Instance setup required</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {hasActiveInvite
-            ? `No instance admin exists yet. A bootstrap invite is already active. Check your ${PRODUCT_NAME} startup logs for the first admin invite URL, or run this command to rotate it:`
-            : `No instance admin exists yet. Run this command in your ${PRODUCT_NAME} environment to generate the first admin invite URL:`}
-        </p>
-        <pre className="mt-4 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
-{`pnpm paperclipai auth bootstrap-ceo`}
-        </pre>
-      </div>
-    </div>
-  );
-}
-
-function NoBoardAccessPage() {
-  return (
-    <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">No company access</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          This account is signed in, but it does not have an active company membership or instance-admin access on
-          this {PRODUCT_NAME} instance.
-        </p>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Use a company invite or sign in with an account that already belongs to this org.
-        </p>
-      </div>
-    </div>
-  );
-}
 
 export function CloudAccessGate() {
   const location = useLocation();
@@ -93,10 +58,6 @@ export function CloudAccessGate() {
     );
   }
 
-  if (isAuthenticatedMode && healthQuery.data?.bootstrapStatus === "bootstrap_pending") {
-    return <BootstrapPendingPage hasActiveInvite={healthQuery.data.bootstrapInviteActive} />;
-  }
-
   if (isAuthenticatedMode && !sessionQuery.data) {
     const next = encodeURIComponent(`${location.pathname}${location.search}`);
     return <Navigate to={`/auth?next=${next}`} replace />;
@@ -108,7 +69,15 @@ export function CloudAccessGate() {
     !boardAccessQuery.data?.isInstanceAdmin &&
     (boardAccessQuery.data?.companyIds.length ?? 0) === 0
   ) {
-    return <NoBoardAccessPage />;
+    if (
+      shouldRedirectCompanylessRouteToOnboarding({
+        pathname: location.pathname,
+        hasCompanies: false,
+      })
+    ) {
+      return <Navigate to="/onboarding" replace />;
+    }
+    return <Outlet />;
   }
 
   return <Outlet />;

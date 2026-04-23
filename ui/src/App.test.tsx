@@ -88,7 +88,7 @@ describe("CloudAccessGate", () => {
     vi.clearAllMocks();
   });
 
-  it("shows a no-access message for signed-in users without org access", async () => {
+  it("redirects signed-in users without company access into onboarding", async () => {
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },
       user: { id: "user-1", email: "user@example.com", name: "User", image: null },
@@ -118,8 +118,7 @@ describe("CloudAccessGate", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("No company access");
-    expect(container.textContent).not.toContain("Outlet content");
+    expect(container.textContent).toContain("Navigate:/onboarding");
 
     await act(async () => {
       root.unmount();
