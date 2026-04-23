@@ -1043,15 +1043,23 @@ async function loadCompanyMemberRecords(
     grantsByPrincipalId.set(grant.principalId, existing);
   }
 
-  return members.map((member) => ({
-    ...member,
-    principalType: "user" as const,
-    membershipRole: member.membershipRole
+  return members.map((member) => {
+    const normalizedRole = member.membershipRole
       ? normalizeHumanRole(member.membershipRole, "operator")
-      : null,
-    user: userMap.get(member.principalId) ?? null,
-    grants: grantsByPrincipalId.get(member.principalId) ?? [],
-  }));
+      : null;
+    const implicitGrantKeys = new Set<PermissionKey>(
+      normalizedRole ? grantsForHumanRole(normalizedRole).map((grant) => grant.permissionKey) : [],
+    );
+    return {
+      ...member,
+      principalType: "user" as const,
+      membershipRole: normalizedRole,
+      user: userMap.get(member.principalId) ?? null,
+      grants: (grantsByPrincipalId.get(member.principalId) ?? []).filter(
+        (grant) => !implicitGrantKeys.has(grant.permissionKey as PermissionKey),
+      ),
+    };
+  });
 }
 
 type CompanyMemberRecord = Awaited<ReturnType<typeof loadCompanyMemberRecords>>[number];

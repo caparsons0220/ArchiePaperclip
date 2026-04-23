@@ -85,6 +85,15 @@ describeEmbeddedPostgres("access service", () => {
     expect(unchanged.membershipRole).toBe("owner");
   });
 
+  it("treats active human roles as implicit permissions even without explicit grants", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const access = accessService(db);
+
+    await expect(access.canUser(company.id, owner.principalId, "agents:create")).resolves.toBe(true);
+    await expect(access.canUser(company.id, owner.principalId, "users:manage_permissions")).resolves.toBe(true);
+    await expect(access.canUser(company.id, owner.principalId, "joins:approve")).resolves.toBe(true);
+  });
+
   it("rejects role-only updates that would suspend the last active owner", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const access = accessService(db);
@@ -220,5 +229,37 @@ describeEmbeddedPostgres("access service", () => {
     await expect(
       access.setUserCompanyAccess(operator.principalId, [], { actorUserId: owner.principalId }),
     ).rejects.toThrow("Instance admins cannot be removed from company access");
+  });
+
+  it("copies active user grants when duplicating company memberships", async () => {
+    const source = await createCompanyWithOwner(db);
+    const target = await db
+      .insert(companies)
+      .values({
+        name: `Access Copy ${randomUUID()}`,
+        issuePrefix: `CP${randomUUID().slice(0, 6).toUpperCase()}`,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const access = accessService(db);
+
+    await access.setPrincipalGrants(
+      source.company.id,
+      "user",
+      source.owner.principalId,
+      [
+        { permissionKey: "agents:create", scope: null },
+        { permissionKey: "tasks:assign", scope: null },
+      ],
+      source.owner.principalId,
+    );
+
+    await access.copyActiveUserMemberships(source.company.id, target.id);
+
+    const copiedMembership = await access.getMembership(target.id, "user", source.owner.principalId);
+    expect(copiedMembership?.membershipRole).toBe("owner");
+
+    const copiedGrants = await access.listPrincipalGrants(target.id, "user", source.owner.principalId);
+    expect(copiedGrants.map((grant) => grant.permissionKey)).toEqual(["agents:create", "tasks:assign"]);
   });
 });
