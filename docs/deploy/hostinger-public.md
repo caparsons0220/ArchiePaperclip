@@ -15,7 +15,7 @@ This repo includes:
 
 - Hostinger VPS with the Docker template
 - `authenticated` + `public`
-- separate app and PostgreSQL containers
+- app container on Hostinger with Supabase Postgres as the system of record
 - `app.archiebravo.com` as the app hostname
 - Traefik on the VPS for HTTPS
 
@@ -46,13 +46,15 @@ Required values:
 - `ARCHIE_HOSTNAME=app.archiebravo.com`
 - `TRAEFIK_CERT_RESOLVER=<your Traefik resolver>`
 - `BETTER_AUTH_SECRET=<long random secret>`
-- `ARCHIE_DB_PASSWORD=<url-safe password>`
+- `DATABASE_URL=<Supabase pooled runtime URL on 6543>`
+- `DATABASE_MIGRATION_URL=<Supabase direct migration URL on 5432>`
 
 Default values to keep for phase 1:
 
 - `PAPERCLIP_DEPLOYMENT_MODE=authenticated`
 - `PAPERCLIP_DEPLOYMENT_EXPOSURE=public`
 - `PAPERCLIP_AUTH_DISABLE_SIGN_UP=false`
+- `PAPERCLIP_DB_BACKUP_ENABLED=false`
 
 The entrypoint auto-initializes Codex CLI auth when `OPENAI_API_KEY` is present.
 
@@ -96,7 +98,7 @@ Open the invite URL, create the first operator via the normal email/password flo
 - login works over HTTPS
 - agent runs complete
 - a second run can continue from prior state
-- restarting containers preserves the DB and `/paperclip` volume
+- restarting containers preserves `/paperclip`, while the primary DB remains in Supabase
 
 ## Optional GitHub Actions deploy
 

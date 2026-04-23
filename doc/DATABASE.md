@@ -118,12 +118,7 @@ DATABASE_MIGRATION_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGIO
 
 If using connection pooling (port 6543), the `postgres` client must disable prepared statements. Update `packages/db/src/client.ts`:
 
-```ts
-export function createDb(url: string) {
-  const sql = postgres(url, { prepare: false });
-  return drizzlePg(sql, { schema });
-}
-```
+Paperclip now does this automatically for Supabase pooled runtime URLs, so you do not need to patch the client manually.
 
 ### Push the schema
 

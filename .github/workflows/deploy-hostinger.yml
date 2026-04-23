@@ -29,10 +29,10 @@ jobs:
             PAPERCLIP_DEPLOYMENT_MODE=authenticated
             PAPERCLIP_DEPLOYMENT_EXPOSURE=public
             BETTER_AUTH_SECRET=${{ secrets.BETTER_AUTH_SECRET }}
-            ARCHIE_DB_NAME=${{ vars.ARCHIE_DB_NAME || 'paperclip' }}
-            ARCHIE_DB_USER=${{ vars.ARCHIE_DB_USER || 'paperclip' }}
-            ARCHIE_DB_PASSWORD=${{ secrets.ARCHIE_DB_PASSWORD }}
+            DATABASE_URL=${{ secrets.DATABASE_URL }}
+            DATABASE_MIGRATION_URL=${{ secrets.DATABASE_MIGRATION_URL }}
             PAPERCLIP_AUTH_DISABLE_SIGN_UP=${{ vars.PAPERCLIP_AUTH_DISABLE_SIGN_UP || 'false' }}
+            PAPERCLIP_DB_BACKUP_ENABLED=${{ vars.PAPERCLIP_DB_BACKUP_ENABLED || 'false' }}
             PAPERCLIP_ALLOWED_HOSTNAMES=${{ vars.PAPERCLIP_ALLOWED_HOSTNAMES }}
             OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
             ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}

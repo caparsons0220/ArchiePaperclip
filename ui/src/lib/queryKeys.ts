@@ -167,4 +167,9 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  homeChat: {
+    models: (companyId: string) => ["home-chat", companyId, "models"] as const,
+    threads: (companyId: string) => ["home-chat", companyId, "threads"] as const,
+    thread: (companyId: string, threadId: string) => ["home-chat", companyId, "thread", threadId] as const,
+  },
 };

@@ -22,7 +22,12 @@ export type ResolvedDatabaseTarget =
   | {
       mode: "postgres";
       connectionString: string;
-      source: "DATABASE_URL" | "paperclip-env" | "config.database.connectionString";
+      source:
+        | "DATABASE_MIGRATION_URL"
+        | "DATABASE_URL"
+        | "paperclip-env-migration"
+        | "paperclip-env"
+        | "config.database.connectionString";
       configPath: string;
       envPath: string;
     }
@@ -217,12 +222,34 @@ export function resolveDatabaseTarget(): ResolvedDatabaseTarget {
   const envPath = resolvePaperclipEnvPath(configPath);
   const envEntries = readEnvEntries(envPath);
 
+  const migrationUrl = process.env.DATABASE_MIGRATION_URL?.trim();
+  if (migrationUrl) {
+    return {
+      mode: "postgres",
+      connectionString: migrationUrl,
+      source: "DATABASE_MIGRATION_URL",
+      configPath,
+      envPath,
+    };
+  }
+
   const envUrl = process.env.DATABASE_URL?.trim();
   if (envUrl) {
     return {
       mode: "postgres",
       connectionString: envUrl,
       source: "DATABASE_URL",
+      configPath,
+      envPath,
+    };
+  }
+
+  const fileMigrationUrl = envEntries.DATABASE_MIGRATION_URL?.trim();
+  if (fileMigrationUrl) {
+    return {
+      mode: "postgres",
+      connectionString: fileMigrationUrl,
+      source: "paperclip-env-migration",
       configPath,
       envPath,
     };

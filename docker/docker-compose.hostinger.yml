@@ -1,41 +1,25 @@
 services:
-  archie-db:
-    image: postgres:17-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${ARCHIE_DB_NAME:-paperclip}
-      POSTGRES_USER: ${ARCHIE_DB_USER:-paperclip}
-      POSTGRES_PASSWORD: ${ARCHIE_DB_PASSWORD:?ARCHIE_DB_PASSWORD must be set}
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${ARCHIE_DB_USER:-paperclip} -d ${ARCHIE_DB_NAME:-paperclip}"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-    volumes:
-      - archie-pgdata:/var/lib/postgresql/data
-
   archie-app:
     image: ${ARCHIE_APP_IMAGE:-archie-bravo:hostinger}
     build:
       context: ..
       dockerfile: Dockerfile
     restart: unless-stopped
-    depends_on:
-      archie-db:
-        condition: service_healthy
     expose:
       - "3100"
     environment:
       HOST: "0.0.0.0"
       PORT: "3100"
       SERVE_UI: "true"
-      DATABASE_URL: postgres://${ARCHIE_DB_USER:-paperclip}:${ARCHIE_DB_PASSWORD}@archie-db:5432/${ARCHIE_DB_NAME:-paperclip}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      DATABASE_MIGRATION_URL: ${DATABASE_MIGRATION_URL:?DATABASE_MIGRATION_URL must be set}
       PAPERCLIP_HOME: "/paperclip"
       PAPERCLIP_DEPLOYMENT_MODE: ${PAPERCLIP_DEPLOYMENT_MODE:-authenticated}
       PAPERCLIP_DEPLOYMENT_EXPOSURE: ${PAPERCLIP_DEPLOYMENT_EXPOSURE:-public}
       PAPERCLIP_PUBLIC_URL: ${PAPERCLIP_PUBLIC_URL:?PAPERCLIP_PUBLIC_URL must be set}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}
       PAPERCLIP_AUTH_DISABLE_SIGN_UP: ${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-false}
+      PAPERCLIP_DB_BACKUP_ENABLED: ${PAPERCLIP_DB_BACKUP_ENABLED:-false}
       PAPERCLIP_ALLOWED_HOSTNAMES: ${PAPERCLIP_ALLOWED_HOSTNAMES:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -57,5 +41,4 @@ services:
       - archie-paperclip-data:/paperclip
 
 volumes:
-  archie-pgdata:
   archie-paperclip-data:

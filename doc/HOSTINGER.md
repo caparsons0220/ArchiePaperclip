@@ -40,18 +40,20 @@ Required values:
 - `ARCHIE_HOSTNAME=app.archiebravo.com`
 - `TRAEFIK_CERT_RESOLVER=<your Traefik resolver>`
 - `BETTER_AUTH_SECRET=<long random secret>`
-- `ARCHIE_DB_PASSWORD=<url-safe password>`
+- `DATABASE_URL=<Supabase pooled runtime URL on 6543>`
+- `DATABASE_MIGRATION_URL=<Supabase direct migration URL on 5432>`
 
 Default values to keep for phase 1:
 
 - `PAPERCLIP_DEPLOYMENT_MODE=authenticated`
 - `PAPERCLIP_DEPLOYMENT_EXPOSURE=public`
 - `PAPERCLIP_AUTH_DISABLE_SIGN_UP=false`
+- `PAPERCLIP_DB_BACKUP_ENABLED=false`
 
 Notes:
 
 - the app is exposed to Traefik through Docker labels; it does not publish a host port
-- PostgreSQL stays internal to Docker and is never published on a host port
+- PostgreSQL is externalized to Supabase in this deployment shape
 - app state persists under the `/paperclip` volume
 - when `OPENAI_API_KEY` is present, the container entrypoint initializes Codex CLI auth in `/paperclip/.codex` automatically
 
@@ -155,7 +157,8 @@ Secrets:
 
 - `HOSTINGER_API_KEY`
 - `BETTER_AUTH_SECRET`
-- `ARCHIE_DB_PASSWORD`
+- `DATABASE_URL`
+- `DATABASE_MIGRATION_URL`
 - `PERSONAL_ACCESS_TOKEN` (private repos only)
 - `OPENAI_API_KEY` (optional)
 - `ANTHROPIC_API_KEY` (optional)
@@ -168,9 +171,8 @@ Variables:
 - `PAPERCLIP_PUBLIC_URL`
 - `ARCHIE_HOSTNAME`
 - `TRAEFIK_CERT_RESOLVER` (optional, defaults to `letsencrypt`)
-- `ARCHIE_DB_NAME` (optional, defaults to `paperclip`)
-- `ARCHIE_DB_USER` (optional, defaults to `paperclip`)
 - `PAPERCLIP_AUTH_DISABLE_SIGN_UP` (optional, defaults to `false`)
+- `PAPERCLIP_DB_BACKUP_ENABLED` (optional, defaults to `false`)
 - `PAPERCLIP_ALLOWED_HOSTNAMES` (optional)
 
 Hostinger guide:
