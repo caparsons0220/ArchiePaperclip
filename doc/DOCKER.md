@@ -100,7 +100,7 @@ docker compose --env-file docker/.env.hostinger.example \
 That deployment path is designed for:
 
 - `authenticated/public`
-- separate app + PostgreSQL containers
+- a Hostinger app container backed by Supabase Postgres
 - a reverse proxy that reads Docker labels, such as Traefik on the VPS
 - a single canonical public URL such as `https://app.archiebravo.com`
 - automatic Codex CLI API-key login when `OPENAI_API_KEY` is present

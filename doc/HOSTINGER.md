@@ -59,6 +59,11 @@ Notes:
 
 ## 5. Deploy Archie from this repo
 
+Production auto-deploys should come from a dedicated `production` branch. Keep
+`master` for integration work, merge or fast-forward `production` only after
+local verification passes, and configure Hostinger Docker Manager to watch that
+branch.
+
 ### Option A: direct VPS deploy
 
 On the VPS, from the repository root:
@@ -73,7 +78,8 @@ docker compose \
 
 ### Option B: Hostinger Docker Manager
 
-Create a Docker Manager project from this repository and set the compose path to:
+Create a Docker Manager project from this repository, select the `production`
+branch, and set the compose path to:
 
 ```txt
 docker/docker-compose.hostinger.yml
@@ -145,7 +151,8 @@ Validate all of these before moving on to Archie-specific product edits:
 
 ## 10. Optional GitHub Actions deploy
 
-After the first manual Hostinger deployment is healthy, you can use the manual workflow in:
+After the first Hostinger Docker Manager deployment is healthy, you can use the
+manual workflow in:
 
 ```txt
 .github/workflows/deploy-hostinger.yml
@@ -159,7 +166,6 @@ Secrets:
 - `BETTER_AUTH_SECRET`
 - `DATABASE_URL`
 - `DATABASE_MIGRATION_URL`
-- `PERSONAL_ACCESS_TOKEN` (private repos only)
 - `OPENAI_API_KEY` (optional)
 - `ANTHROPIC_API_KEY` (optional)
 - `GEMINI_API_KEY` (optional)
