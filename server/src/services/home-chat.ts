@@ -36,14 +36,18 @@ const ANTHROPIC_MAX_TOKENS = 4_096;
 const HOME_TOOL_ROUND_LIMIT = 6;
 const HOME_TOOL_CALL_LIMIT = 12;
 const HOME_TOOL_RESULT_CHAR_LIMIT = 12_000;
-const UNKNOWN_HOME_TOOL_NAME = "unknown_home_tool";
-const UNKNOWN_HOME_TOOL_DISPLAY_NAME = "Unknown Home tool";
 
 type HomeChatThreadRow = typeof homeChatThreads.$inferSelect;
 type OpenAIConversationItem = Record<string, unknown>;
 type AnthropicConversationMessage = {
   role: "user" | "assistant";
   content: string | Array<Record<string, unknown>>;
+};
+type PendingProviderToolCall = {
+  provider: HomeChatProvider;
+  providerCallId: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
 };
 
 function parseMessages(value: unknown): HomeChatMessage[] {
@@ -170,21 +174,6 @@ function sanitizeToolName(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function resolveToolIdentity(name: string, displayName?: string | null) {
-  const normalizedName = sanitizeToolName(name);
-  const normalizedDisplayName = sanitizeToolName(displayName ?? "");
-  if (normalizedName) {
-    return {
-      name: normalizedName,
-      displayName: normalizedDisplayName || normalizedName,
-    };
-  }
-  return {
-    name: UNKNOWN_HOME_TOOL_NAME,
-    displayName: UNKNOWN_HOME_TOOL_DISPLAY_NAME,
-  };
-}
-
 function mapMessagesToOpenAIInput(messages: HomeChatMessage[]): OpenAIConversationItem[] {
   return messages.map((message) => ({
     role: message.role,
@@ -216,67 +205,29 @@ function buildProviderToolDefinitions(provider: HomeChatProvider, tools: HomeToo
   }));
 }
 
-function resolveResponseId(event: Record<string, unknown>, currentResponseId: string | null) {
-  if (typeof event.response_id === "string" && event.response_id.trim().length > 0) {
-    return event.response_id;
-  }
-  const response = typeof event.response === "object" && event.response !== null
-    ? event.response as Record<string, unknown>
-    : null;
-  if (response && typeof response.id === "string" && response.id.trim().length > 0) {
-    return response.id;
-  }
-  return currentResponseId;
-}
-
 async function runSelectedHomeTool(input: {
   dispatcher: ReturnType<typeof createHomeToolDispatcher>;
   ctx: HomeToolContext;
   allowedTools: Map<string, HomeToolDescriptor>;
-  toolCallId: string;
-  name: string;
-  arguments: Record<string, unknown>;
+  toolCall: PendingProviderToolCall;
   onEvent: (event: HomeChatStreamEvent) => Promise<void> | void;
 }) {
-  const fallbackIdentity = resolveToolIdentity(input.name);
-  const descriptor = input.allowedTools.get(input.name);
+  const descriptor = input.allowedTools.get(input.toolCall.toolName);
   if (!descriptor) {
-    const message = sanitizeToolName(input.name)
-      ? `Home tool is not available in this turn: ${input.name}`
-      : "Provider emitted a Home tool call without a valid tool name.";
-    await input.onEvent({
-      type: "tool_call_failed",
-      toolCallId: input.toolCallId,
-      name: fallbackIdentity.name,
-      displayName: fallbackIdentity.displayName,
-      error: message,
-    });
-    return {
-      toolCallId: input.toolCallId,
-      name: fallbackIdentity.name,
-      displayName: fallbackIdentity.displayName,
-      content: message,
-      data: undefined,
-      status: "failed" as const,
-      output: serializeToolResultPayload({
-        name: fallbackIdentity.name,
-        status: "failed",
-        content: message,
-      }),
-    };
+    throw new Error(`Home tool is not available in this turn: ${input.toolCall.toolName}`);
   }
 
   await input.onEvent({
     type: "tool_call_requested",
-    toolCallId: input.toolCallId,
+    toolCallId: input.toolCall.providerCallId,
     name: descriptor.name,
     displayName: descriptor.displayName,
-    input: input.arguments,
+    input: input.toolCall.arguments,
     riskLevel: descriptor.riskLevel,
   });
   await input.onEvent({
     type: "tool_call_started",
-    toolCallId: input.toolCallId,
+    toolCallId: input.toolCall.providerCallId,
     name: descriptor.name,
     displayName: descriptor.displayName,
   });
@@ -284,8 +235,8 @@ async function runSelectedHomeTool(input: {
     const execution = await input.dispatcher.executeTool({
       ctx: input.ctx,
       name: descriptor.name,
-      parameters: input.arguments,
-      toolCallId: input.toolCallId,
+      parameters: input.toolCall.arguments,
+      toolCallId: input.toolCall.providerCallId,
     });
     await input.onEvent({
       type: "tool_call_result",
@@ -313,13 +264,13 @@ async function runSelectedHomeTool(input: {
     const message = error instanceof Error ? error.message : "Home tool failed";
     await input.onEvent({
       type: "tool_call_failed",
-      toolCallId: input.toolCallId,
+      toolCallId: input.toolCall.providerCallId,
       name: descriptor.name,
       displayName: descriptor.displayName,
       error: message,
     });
     return {
-      toolCallId: input.toolCallId,
+      toolCallId: input.toolCall.providerCallId,
       name: descriptor.name,
       displayName: descriptor.displayName,
       content: message,
@@ -331,6 +282,38 @@ async function runSelectedHomeTool(input: {
       }),
     };
   }
+}
+
+function validatePendingToolCall(input: {
+  toolCall: PendingProviderToolCall;
+  allowedTools: Map<string, HomeToolDescriptor>;
+}) {
+  const toolName = sanitizeToolName(input.toolCall.toolName);
+  if (!toolName) {
+    throw badRequest("Provider emitted a Home tool call without a valid tool name.");
+  }
+  if (!input.allowedTools.has(toolName)) {
+    throw badRequest(`Home tool is not available in this turn: ${toolName}`);
+  }
+  return {
+    ...input.toolCall,
+    toolName,
+  } satisfies PendingProviderToolCall;
+}
+
+function mergePendingToolCall(
+  current: PendingProviderToolCall | undefined,
+  incoming: Partial<Pick<PendingProviderToolCall, "toolName" | "arguments">>,
+  defaults: Pick<PendingProviderToolCall, "provider" | "providerCallId">,
+): PendingProviderToolCall {
+  return {
+    provider: defaults.provider,
+    providerCallId: defaults.providerCallId,
+    toolName: sanitizeToolName(incoming.toolName) || current?.toolName || "",
+    arguments: incoming.arguments && Object.keys(incoming.arguments).length > 0
+      ? incoming.arguments
+      : current?.arguments ?? {},
+  };
 }
 
 function ensureProviderApiKey(provider: HomeChatProvider) {
@@ -359,7 +342,6 @@ async function streamOpenAIResponse(input: {
   conversationInput: OpenAIConversationItem[];
   round?: number;
   totalToolCalls?: number;
-  previousResponseId?: string | null;
   onDelta: (delta: string) => Promise<void> | void;
   onEvent: (event: HomeChatStreamEvent) => Promise<void> | void;
 }): Promise<string> {
@@ -371,7 +353,6 @@ async function streamOpenAIResponse(input: {
     model: input.model.id,
     instructions: input.systemPrompt,
     input: input.conversationInput,
-    previous_response_id: input.previousResponseId ?? undefined,
     tools: toolDefinitions.length > 0 ? toolDefinitions as any : undefined,
     parallel_tool_calls: false,
     store: false,
@@ -379,11 +360,11 @@ async function streamOpenAIResponse(input: {
   } as any) as unknown as AsyncIterable<any>;
 
   let content = "";
-  let responseId: string | null = input.previousResponseId ?? null;
-  const toolCalls = new Map<string, { callId: string; name: string; arguments: Record<string, unknown> }>();
+  const assistantOutputItems: OpenAIConversationItem[] = [];
+  const pendingToolCalls = new Map<string, PendingProviderToolCall>();
+  const completedToolCalls = new Map<string, PendingProviderToolCall>();
   for await (const event of stream) {
     const current = event as any;
-    responseId = resolveResponseId(current, responseId);
     if (current.type === "response.output_text.delta" && typeof current.delta === "string" && current.delta.length > 0) {
       content += current.delta;
       await input.onDelta(current.delta);
@@ -391,28 +372,39 @@ async function streamOpenAIResponse(input: {
     }
 
     if (current.type === "response.output_item.done" && current.item?.type === "function_call") {
-      const callId = String(current.item.call_id ?? current.item.id ?? `openai-tool-${toolCalls.size}`);
-      const existing = toolCalls.get(callId);
-      toolCalls.set(callId, {
-        callId,
-        name: sanitizeToolName(current.item.name) || existing?.name || "",
-        arguments: Object.keys(parseJsonRecord(current.item.arguments)).length > 0
-          ? parseJsonRecord(current.item.arguments)
-          : existing?.arguments ?? {},
-      });
+      const callId = String(current.item.call_id ?? current.item.id ?? `openai-tool-${pendingToolCalls.size}`);
+      const merged = mergePendingToolCall(
+        pendingToolCalls.get(callId),
+        {
+          toolName: current.item.name,
+          arguments: parseJsonRecord(current.item.arguments),
+        },
+        { provider: "openai", providerCallId: callId },
+      );
+      pendingToolCalls.set(callId, merged);
+      completedToolCalls.set(callId, validatePendingToolCall({
+        toolCall: merged,
+        allowedTools,
+      }));
       continue;
     }
 
     if (current.type === "response.function_call_arguments.done") {
-      const callId = String(current.call_id ?? current.item_id ?? `openai-tool-${toolCalls.size}`);
-      const existing = toolCalls.get(callId);
-      toolCalls.set(callId, {
-        callId,
-        name: sanitizeToolName(current.name) || existing?.name || "",
-        arguments: Object.keys(parseJsonRecord(current.arguments)).length > 0
-          ? parseJsonRecord(current.arguments)
-          : existing?.arguments ?? {},
-      });
+      const callId = String(current.call_id ?? current.item_id ?? `openai-tool-${pendingToolCalls.size}`);
+      const merged = mergePendingToolCall(
+        pendingToolCalls.get(callId),
+        {
+          toolName: current.name,
+          arguments: parseJsonRecord(current.arguments),
+        },
+        { provider: "openai", providerCallId: callId },
+      );
+      pendingToolCalls.set(callId, merged);
+      continue;
+    }
+
+    if (current.type === "response.output_item.done" && current.item && typeof current.item === "object") {
+      assistantOutputItems.push(current.item as OpenAIConversationItem);
       continue;
     }
 
@@ -423,41 +415,55 @@ async function streamOpenAIResponse(input: {
 
   const round = input.round ?? 0;
   const totalToolCalls = input.totalToolCalls ?? 0;
-  const completedToolCalls = Array.from(toolCalls.values());
+  const finalizedToolCalls = Array.from(completedToolCalls.values());
   if (
-    completedToolCalls.length > 0
+    finalizedToolCalls.length > 0
     && round < HOME_TOOL_ROUND_LIMIT
     && totalToolCalls < HOME_TOOL_CALL_LIMIT
   ) {
     const remainingToolCalls = HOME_TOOL_CALL_LIMIT - totalToolCalls;
     const toolResults = [];
-    for (const toolCall of completedToolCalls.slice(0, remainingToolCalls)) {
+    for (const toolCall of finalizedToolCalls.slice(0, remainingToolCalls)) {
       toolResults.push(await runSelectedHomeTool({
         dispatcher: input.dispatcher,
         ctx: input.ctx,
         allowedTools,
-        toolCallId: toolCall.callId,
-        name: toolCall.name,
-        arguments: toolCall.arguments,
+        toolCall,
         onEvent: input.onEvent,
       }));
     }
 
-    const followupInput = toolResults.map((result) => ({
-      type: "function_call_output",
-      call_id: result.toolCallId,
-      output: result.output,
-    }));
+    const followupInput = [
+      ...input.conversationInput,
+      ...assistantOutputItems,
+      ...(
+        assistantOutputItems.length === 0 && content.trim().length > 0
+          ? [{ role: "assistant", content: content.trim() }]
+          : []
+      ),
+      ...finalizedToolCalls.slice(0, remainingToolCalls).map((toolCall) => ({
+        type: "function_call",
+        call_id: toolCall.providerCallId,
+        name: toolCall.toolName,
+        arguments: JSON.stringify(toolCall.arguments),
+      })),
+      ...toolResults.map((result) => ({
+        type: "function_call_output",
+        call_id: result.toolCallId,
+        output: result.output,
+      })),
+    ];
     const followup: string = await streamOpenAIResponse({
       ...input,
-      conversationInput: responseId
-        ? followupInput
-        : [...input.conversationInput, ...followupInput],
-      previousResponseId: responseId,
+      conversationInput: followupInput,
       round: round + 1,
       totalToolCalls: totalToolCalls + toolResults.length,
     });
     return appendAssistantContent(content, followup);
+  }
+
+  if (pendingToolCalls.size > 0 && finalizedToolCalls.length === 0) {
+    throw badRequest("Provider emitted an incomplete Home tool call.");
   }
 
   return content.trim();
@@ -490,19 +496,27 @@ async function streamAnthropicResponse(input: {
   } as any) as unknown as AsyncIterable<any>;
 
   let content = "";
-  const toolBlocks = new Map<number, { id: string; name: string; inputJson: string }>();
-  const completedToolCalls: Array<{ toolCallId: string; name: string; arguments: Record<string, unknown> }> = [];
+  const pendingToolCalls = new Map<number, PendingProviderToolCall>();
+  const pendingToolArguments = new Map<number, string>();
+  const completedToolCalls: PendingProviderToolCall[] = [];
   for await (const event of stream) {
     const current = event as any;
     if (
       current.type === "content_block_start"
       && current.content_block?.type === "tool_use"
     ) {
-      toolBlocks.set(Number(current.index ?? 0), {
-        id: String(current.content_block.id ?? `anthropic-tool-${toolBlocks.size}`),
-        name: String(current.content_block.name ?? ""),
-        inputJson: "",
-      });
+      const blockIndex = Number(current.index ?? 0);
+      pendingToolCalls.set(blockIndex, mergePendingToolCall(
+        pendingToolCalls.get(blockIndex),
+        {
+          toolName: current.content_block.name,
+        },
+        {
+          provider: "anthropic",
+          providerCallId: String(current.content_block.id ?? `anthropic-tool-${blockIndex}`),
+        },
+      ));
+      pendingToolArguments.set(blockIndex, "");
       continue;
     }
 
@@ -510,22 +524,36 @@ async function streamAnthropicResponse(input: {
       current.type === "content_block_delta"
       && current.delta?.type === "input_json_delta"
     ) {
-      const block = toolBlocks.get(Number(current.index ?? 0));
-      if (block && typeof current.delta.partial_json === "string") {
-        block.inputJson += current.delta.partial_json;
+      const blockIndex = Number(current.index ?? 0);
+      if (typeof current.delta.partial_json === "string") {
+        pendingToolArguments.set(
+          blockIndex,
+          `${pendingToolArguments.get(blockIndex) ?? ""}${current.delta.partial_json}`,
+        );
       }
       continue;
     }
 
     if (current.type === "content_block_stop") {
-      const block = toolBlocks.get(Number(current.index ?? 0));
+      const blockIndex = Number(current.index ?? 0);
+      const block = pendingToolCalls.get(blockIndex);
       if (block) {
-        completedToolCalls.push({
-          toolCallId: block.id,
-          name: block.name,
-          arguments: parseJsonRecord(block.inputJson),
-        });
-        toolBlocks.delete(Number(current.index ?? 0));
+        const merged = mergePendingToolCall(
+          block,
+          {
+            arguments: parseJsonRecord(pendingToolArguments.get(blockIndex) ?? ""),
+          },
+          {
+            provider: block.provider,
+            providerCallId: block.providerCallId,
+          },
+        );
+        completedToolCalls.push(validatePendingToolCall({
+          toolCall: merged,
+          allowedTools,
+        }));
+        pendingToolCalls.delete(blockIndex);
+        pendingToolArguments.delete(blockIndex);
       }
       continue;
     }
@@ -556,9 +584,7 @@ async function streamAnthropicResponse(input: {
         dispatcher: input.dispatcher,
         ctx: input.ctx,
         allowedTools,
-        toolCallId: toolCall.toolCallId,
-        name: toolCall.name,
-        arguments: toolCall.arguments,
+        toolCall,
         onEvent: input.onEvent,
       }));
     }
@@ -573,8 +599,8 @@ async function streamAnthropicResponse(input: {
     for (const toolCall of completedToolCalls.slice(0, remainingToolCalls)) {
       assistantContentBlocks.push({
         type: "tool_use",
-        id: toolCall.toolCallId,
-        name: toolCall.name,
+        id: toolCall.providerCallId,
+        name: toolCall.toolName,
         input: toolCall.arguments,
       });
     }
@@ -602,6 +628,10 @@ async function streamAnthropicResponse(input: {
       totalToolCalls: totalToolCalls + toolResults.length,
     });
     return appendAssistantContent(content, followup);
+  }
+
+  if (pendingToolCalls.size > 0 && completedToolCalls.length === 0) {
+    throw badRequest("Provider emitted an incomplete Home tool call.");
   }
 
   return content.trim();

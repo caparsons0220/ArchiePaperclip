@@ -262,12 +262,33 @@ describeEmbeddedPostgres("home chat service", () => {
     });
 
     expect(openAICreateMock).toHaveBeenCalledTimes(3);
+    expect(openAICreateMock.mock.calls[0]?.[0]).not.toHaveProperty("previous_response_id");
+    expect(openAICreateMock.mock.calls[1]?.[0]).not.toHaveProperty("previous_response_id");
+    expect(openAICreateMock.mock.calls[2]?.[0]).not.toHaveProperty("previous_response_id");
     const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
     expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["list_agents", "pause_agent"]));
     expect(firstTools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
       "list_home_tools",
       "search_home_tools",
       "call_home_tool",
+    ]));
+    expect(openAICreateMock.mock.calls[1]?.[0]?.store).toBe(false);
+    expect(openAICreateMock.mock.calls[1]?.[0]?.input).toEqual(expect.arrayContaining([
+      {
+        role: "user",
+        content: "Pause the Sales Agent.",
+      },
+      {
+        type: "function_call",
+        call_id: "call-list-agents",
+        name: "list_agents",
+        arguments: JSON.stringify({}),
+      },
+      {
+        type: "function_call_output",
+        call_id: "call-list-agents",
+        output: expect.stringContaining("\"tool\": \"list_agents\""),
+      },
     ]));
     expect(events).toEqual(expect.arrayContaining(["tool_call_started", "tool_call_result"]));
     expect(assistantMessage.content).toBe("Use pause_agent.");
@@ -310,27 +331,23 @@ describeEmbeddedPostgres("home chat service", () => {
     expect(assistantMessage.content).toBe("I can help with agents, budgets, projects, and approvals.");
   });
 
-  it("emits a valid failure event when OpenAI streams a malformed tool call without a name", async () => {
+  it("rejects malformed OpenAI tool calls without emitting fake tool events", async () => {
     process.env.OPENAI_API_KEY = "openai-test-key";
     const userId = `user-malformed-tool-${randomUUID()}`;
     const company = await insertCompany(db, "Malformed Tool Company");
     await insertUser(db, userId, "Malformed Tool User");
     const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4-mini" });
 
-    openAICreateMock
-      .mockResolvedValueOnce(createAsyncIterable([
-        {
-          type: "response.function_call_arguments.done",
-          call_id: "call-missing-name",
-          arguments: JSON.stringify({ scope: "company", monthlyCents: 1000 }),
-        },
-      ]))
-      .mockResolvedValueOnce(createAsyncIterable([
-        { type: "response.output_text.delta", delta: "I couldn't run that tool call." },
-      ]));
+    openAICreateMock.mockResolvedValueOnce(createAsyncIterable([
+      {
+        type: "response.function_call_arguments.done",
+        call_id: "call-missing-name",
+        arguments: JSON.stringify({ scope: "company", monthlyCents: 1000 }),
+      },
+    ]));
 
     const toolEvents: Array<{ type: string; name?: string; displayName?: string; error?: string }> = [];
-    const assistantMessage = await svc.streamThreadReply({
+    await expect(svc.streamThreadReply({
       companyId: company.id,
       ownerUserId: userId,
       threadId: thread.id,
@@ -351,18 +368,13 @@ describeEmbeddedPostgres("home chat service", () => {
           });
         }
       },
+    })).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining("incomplete Home tool call"),
     });
 
-    expect(toolEvents).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        type: "tool_call_failed",
-        name: "unknown_home_tool",
-        displayName: "Unknown Home tool",
-      }),
-    ]));
-    expect(toolEvents.find((event) => event.type === "tool_call_failed")?.error)
-      .toContain("without a valid tool name");
-    expect(assistantMessage.content).toBe("I couldn't run that tool call.");
+    expect(toolEvents).toEqual([]);
+    expect(openAICreateMock).toHaveBeenCalledTimes(1);
   });
 
   it("auto-executes risky OpenAI tool calls exactly once", async () => {
@@ -543,6 +555,56 @@ describeEmbeddedPostgres("home chat service", () => {
       .where(eq(companies.id, company.id))
       .then((rows) => rows[0] ?? null);
     expect(updatedCompany?.budgetMonthlyCents).toBe(2500);
+  });
+
+  it("rejects malformed Anthropic tool calls without emitting fake tool events", async () => {
+    process.env.ANTHROPIC_API_KEY = "anthropic-test-key";
+    const userId = `user-anthropic-malformed-tool-${randomUUID()}`;
+    const company = await insertCompany(db, "Malformed Anthropic Tool Company");
+    await insertUser(db, userId, "Malformed Anthropic Tool User");
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "claude-haiku-4-5" });
+
+    anthropicCreateMock.mockResolvedValueOnce(createAsyncIterable([
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "tool_use", id: "toolu_missing_name", name: "" },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: {
+          type: "input_json_delta",
+          partial_json: "{\"scope\":\"company\"}",
+        },
+      },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_stop" },
+    ]));
+
+    const toolEvents: Array<{ type: string; name?: string }> = [];
+    await expect(svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "Change the company budget.",
+      modelId: "claude-haiku-4-5",
+      onEvent: (event) => {
+        if (
+          event.type === "tool_call_failed"
+          || event.type === "tool_call_requested"
+          || event.type === "tool_call_started"
+          || event.type === "tool_call_result"
+        ) {
+          toolEvents.push({ type: event.type, name: event.name });
+        }
+      },
+    })).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining("without a valid tool name"),
+    });
+
+    expect(toolEvents).toEqual([]);
   });
 
   it("rejects missing provider keys after persisting the user message", async () => {
