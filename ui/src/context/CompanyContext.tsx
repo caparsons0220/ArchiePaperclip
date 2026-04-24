@@ -93,6 +93,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
       companiesApi.create(data),
     onSuccess: (company) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
       setSelectedCompanyId(company.id);
     },
   });

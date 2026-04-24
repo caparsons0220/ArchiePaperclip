@@ -388,7 +388,10 @@ export function OnboardingWizard() {
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
-      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.access.currentBoardAccess
+      });
 
       if (companyGoal.trim()) {
         const parsedGoal = parseOnboardingGoalInput(companyGoal);
@@ -588,6 +591,9 @@ export function OnboardingWizard() {
       }
 
       setSelectedCompanyId(createdCompanyId);
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.access.currentBoardAccess
+      });
       reset();
       closeOnboarding();
       navigate(

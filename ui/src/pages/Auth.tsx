@@ -53,6 +53,7 @@ export function AuthPage() {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
       navigate(nextPath, { replace: true });
     },
     onError: (err) => {
