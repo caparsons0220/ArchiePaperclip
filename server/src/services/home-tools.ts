@@ -15,7 +15,11 @@ import {
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeService,
   type WorkspaceRuntimeServiceStateMap,
+  isUuidLike,
+  normalizeAgentUrlKey,
+  normalizeProjectUrlKey,
 } from "@paperclipai/shared";
+import type { HomeChatToolFailureData } from "@paperclipai/shared/home-chat";
 import { activityService } from "./activity.js";
 import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
@@ -42,7 +46,7 @@ import {
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
 import { logActivity } from "./activity-log.js";
-import { badRequest, forbidden, notFound } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 
 export type HomeToolRiskLevel = "safe" | "low" | "risky";
 
@@ -123,11 +127,25 @@ interface HomeToolInventoryProvider {
   listEntries: () => HomeToolInventoryEntry[];
 }
 
+interface HomeToolFailureCandidate {
+  id?: string;
+  label: string;
+  ref?: string;
+}
+
+interface HomeToolRefSelector {
+  id: string | null;
+  ref: string | null;
+  legacyRef: string | null;
+  reference: string | null;
+}
+
 const INTERNAL_HOME_TOOL_SOURCE_ID = "paperclip.home.internal";
 const DEFAULT_TOOL_SELECTION_LIMIT = 12;
 const CAPABILITY_TOOL_SELECTION_LIMIT = 20;
 const TOOL_SELECTION_LIMIT_MAX = 20;
 const TOOL_INVENTORY_LIMIT_MAX = 25;
+const ISSUE_IDENTIFIER_RE = /^[A-Z]+-\d+$/i;
 const CAPABILITY_QUERY_PATTERNS = [
   /\bwhat can (you|archie) do\b/i,
   /\bwhat tools\b/i,
@@ -137,6 +155,14 @@ const CAPABILITY_QUERY_PATTERNS = [
   /\bavailable actions\b/i,
   /\bcapabilities\b/i,
 ];
+const HOME_TOOL_COMPANIONS: Record<string, string[]> = {
+  create_issue: ["list_agents", "list_projects"],
+  update_issue_status: ["list_issues"],
+  pause_agent: ["list_agents"],
+  resume_agent: ["list_agents"],
+  restart_preview_runtime: ["list_projects", "list_execution_workspaces", "get_active_preview"],
+  update_budget: ["get_costs_and_budgets", "list_agents", "list_projects"],
+};
 
 function objectSchema(properties: Record<string, unknown>, required: string[] = []) {
   return {
@@ -165,6 +191,119 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function compactWhitespace(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeLooseRef(value: string | null | undefined) {
+  if (typeof value !== "string") return null;
+  const normalized = compactWhitespace(value).toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function buildToolFailureData(input: {
+  code: HomeChatToolFailureData["code"];
+  entityType?: string;
+  reference?: string | null;
+  candidates?: HomeToolFailureCandidate[];
+  hint?: string;
+}): HomeChatToolFailureData {
+  return {
+    code: input.code,
+    entityType: input.entityType,
+    reference: input.reference ?? undefined,
+    candidates: input.candidates?.filter((candidate) => candidate.label.trim().length > 0),
+    hint: input.hint,
+  };
+}
+
+function throwToolBadReference(input: {
+  message: string;
+  entityType: string;
+  reference?: string | null;
+  candidates?: HomeToolFailureCandidate[];
+  hint?: string;
+}): never {
+  throw badRequest(input.message, buildToolFailureData({
+    code: "invalid_reference",
+    entityType: input.entityType,
+    reference: input.reference,
+    candidates: input.candidates,
+    hint: input.hint,
+  }));
+}
+
+function throwToolNotFound(input: {
+  message: string;
+  entityType: string;
+  reference?: string | null;
+  hint?: string;
+}): never {
+  throw notFound(input.message, buildToolFailureData({
+    code: "not_found",
+    entityType: input.entityType,
+    reference: input.reference,
+    hint: input.hint,
+  }));
+}
+
+function throwToolConflict(input: {
+  message: string;
+  entityType: string;
+  reference?: string | null;
+  candidates?: HomeToolFailureCandidate[];
+  hint?: string;
+}): never {
+  throw conflict(input.message, buildToolFailureData({
+    code: "ambiguous_reference",
+    entityType: input.entityType,
+    reference: input.reference,
+    candidates: input.candidates,
+    hint: input.hint,
+  }));
+}
+
+function throwToolForbiddenScope(input: {
+  message: string;
+  entityType: string;
+  reference?: string | null;
+  hint?: string;
+}): never {
+  throw forbidden(input.message, buildToolFailureData({
+    code: "forbidden_company_scope",
+    entityType: input.entityType,
+    reference: input.reference,
+    hint: input.hint,
+  }));
+}
+
+function pickRefSelector(input: Record<string, unknown>, idField: string, refField: string): HomeToolRefSelector {
+  const rawId = asString(input[idField]);
+  const rawRef = asString(input[refField]);
+  const legacyRef = rawId && !isUuidLike(rawId) ? rawId : null;
+  return {
+    id: rawId && isUuidLike(rawId) ? rawId : null,
+    ref: rawRef,
+    legacyRef,
+    reference: rawRef ?? legacyRef,
+  };
+}
+
+function buildNamedCandidates<T>(
+  rows: T[],
+  options: {
+    id: (row: T) => string;
+    label: (row: T) => string;
+    ref?: (row: T) => string | null | undefined;
+  },
+): HomeToolFailureCandidate[] {
+  return rows.map((row) => ({
+    id: options.id(row),
+    label: options.label(row),
+    ref: options.ref?.(row) ?? undefined,
+  }));
 }
 
 function asNumber(value: unknown, fallback: number): number {
@@ -303,6 +442,16 @@ export function createHomeToolDispatcher(db: Db) {
   const companySkills = companySkillService(db);
   const secrets = secretService(db);
 
+  async function assertCompanyEntityAccess(
+    ctx: HomeToolContext,
+    kind: "agent",
+    id: string,
+  ): Promise<NonNullable<Awaited<ReturnType<typeof agentSvc.getById>>>>;
+  async function assertCompanyEntityAccess(
+    ctx: HomeToolContext,
+    kind: "issue",
+    id: string,
+  ): Promise<NonNullable<Awaited<ReturnType<typeof issueSvc.getById>>>>;
   async function assertCompanyEntityAccess(ctx: HomeToolContext, kind: "agent" | "issue", id: string) {
     if (kind === "agent") {
       const row = await agentSvc.getById(id);
@@ -316,12 +465,385 @@ export function createHomeToolDispatcher(db: Db) {
     return row;
   }
 
+  async function resolveAgentTarget(
+    ctx: HomeToolContext,
+    input: Record<string, unknown>,
+    options: {
+      idField?: string;
+      refField?: string;
+      requiredMessage?: string;
+    } = {},
+  ) {
+    const idField = options.idField ?? "agentId";
+    const refField = options.refField ?? "agentRef";
+    const selector = pickRefSelector(input, idField, refField);
+    if (!selector.id && !selector.reference) {
+      throwToolBadReference({
+        message: options.requiredMessage ?? `${idField} or ${refField} is required`,
+        entityType: "agent",
+        hint: "Use the agent UUID or the company-local agent name/urlKey.",
+      });
+    }
+
+    const matchReference = async (reference: string) => {
+      const resolved = await agentSvc.resolveByReference(ctx.companyId, reference);
+      if (resolved.ambiguous) {
+        const candidates = (await agentSvc.list(ctx.companyId, { includeTerminated: false }))
+          .filter((agent) => normalizeAgentUrlKey(agent.name) === normalizeAgentUrlKey(reference))
+          .map((agent) => ({
+            id: agent.id,
+            label: agent.name,
+            ref: agent.urlKey,
+          }));
+        throwToolConflict({
+          message: `Agent reference "${reference}" is ambiguous in this company.`,
+          entityType: "agent",
+          reference,
+          candidates,
+          hint: "Use the exact agent ID or a more specific company-local agent name.",
+        });
+      }
+      if (!resolved.agent) {
+        throwToolNotFound({
+          message: `Agent "${reference}" was not found in this company.`,
+          entityType: "agent",
+          reference,
+          hint: "Call list_agents first or use the exact agent name/urlKey.",
+        });
+      }
+      return resolved.agent;
+    };
+
+    if (selector.id) {
+      const agent = await agentSvc.getById(selector.id);
+      if (!agent) {
+        throwToolNotFound({
+          message: `Agent "${selector.id}" was not found.`,
+          entityType: "agent",
+          reference: selector.id,
+          hint: "Use the exact agent UUID or company-local agent name.",
+        });
+      }
+      if (agent.companyId !== ctx.companyId) {
+        throwToolForbiddenScope({
+          message: "Agent does not belong to the active company.",
+          entityType: "agent",
+          reference: selector.id,
+          hint: "Use an agent from the current company only.",
+        });
+      }
+      if (selector.ref) {
+        const resolvedByRef = await matchReference(selector.ref);
+        if (resolvedByRef.id !== agent.id) {
+          throwToolBadReference({
+            message: "Provided agentId and agentRef point to different agents.",
+            entityType: "agent",
+            reference: selector.ref,
+            candidates: [{
+              id: agent.id,
+              label: agent.name,
+              ref: agent.urlKey,
+            }],
+            hint: "Pass either the exact agent ID or the matching agent ref, not conflicting selectors.",
+          });
+        }
+      }
+      return agent;
+    }
+
+    return await matchReference(selector.reference!);
+  }
+
+  async function findIssueReferenceMatches(companyId: string, reference: string) {
+    const trimmed = reference.trim();
+    const normalized = normalizeLooseRef(trimmed);
+    if (!trimmed || !normalized) return [];
+    const rows = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        title: issues.title,
+      })
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+
+    return rows.filter((row) =>
+      row.identifier?.toUpperCase() === trimmed.toUpperCase()
+      || normalizeLooseRef(row.title) === normalized
+    );
+  }
+
+  async function resolveIssueTarget(
+    ctx: HomeToolContext,
+    input: Record<string, unknown>,
+    options: {
+      idField?: string;
+      refField?: string;
+      requiredMessage?: string;
+    } = {},
+  ) {
+    const idField = options.idField ?? "issueId";
+    const refField = options.refField ?? "issueRef";
+    const selector = pickRefSelector(input, idField, refField);
+    if (!selector.id && !selector.reference) {
+      throwToolBadReference({
+        message: options.requiredMessage ?? `${idField} or ${refField} is required`,
+        entityType: "issue",
+        hint: "Use the issue UUID, identifier, or exact issue title.",
+      });
+    }
+
+    const matchReference = async (reference: string) => {
+      const matches = await findIssueReferenceMatches(ctx.companyId, reference);
+      if (matches.length > 1) {
+        throwToolConflict({
+          message: `Issue reference "${reference}" is ambiguous in this company.`,
+          entityType: "issue",
+          reference,
+          candidates: buildNamedCandidates(matches, {
+            id: (row) => row.id,
+            label: (row) => row.identifier ? `${row.identifier}: ${row.title}` : row.title,
+            ref: (row) => row.identifier ?? row.title,
+          }),
+          hint: "Use the issue UUID or identifier when multiple issue titles match.",
+        });
+      }
+      const match = matches[0] ?? null;
+      if (!match) {
+        throwToolNotFound({
+          message: `Issue "${reference}" was not found in this company.`,
+          entityType: "issue",
+          reference,
+          hint: "Use the issue UUID, identifier, or exact title.",
+        });
+      }
+      return await assertCompanyEntityAccess(ctx, "issue", match.id);
+    };
+
+    if (selector.id) {
+      const issue = await assertCompanyEntityAccess(ctx, "issue", selector.id);
+      if (selector.ref) {
+        const resolvedByRef = await matchReference(selector.ref);
+        if (resolvedByRef.id !== issue.id) {
+          throwToolBadReference({
+            message: "Provided issueId and issueRef point to different issues.",
+            entityType: "issue",
+            reference: selector.ref,
+            candidates: [{
+              id: issue.id,
+              label: issue.identifier ? `${issue.identifier}: ${issue.title}` : issue.title,
+              ref: issue.identifier ?? issue.title,
+            }],
+            hint: "Pass either the exact issue ID or the matching issue ref, not conflicting selectors.",
+          });
+        }
+      }
+      return issue;
+    }
+
+    return await matchReference(selector.reference!);
+  }
+
+  async function resolveProjectTarget(
+    ctx: HomeToolContext,
+    input: Record<string, unknown>,
+    options: {
+      idField?: string;
+      refField?: string;
+      requiredMessage?: string;
+    } = {},
+  ) {
+    const idField = options.idField ?? "projectId";
+    const refField = options.refField ?? "projectRef";
+    const selector = pickRefSelector(input, idField, refField);
+    if (!selector.id && !selector.reference) {
+      throwToolBadReference({
+        message: options.requiredMessage ?? `${idField} or ${refField} is required`,
+        entityType: "project",
+        hint: "Use the project UUID or the company-local project name/urlKey.",
+      });
+    }
+
+    const matchReference = async (reference: string) => {
+      const resolved = await projectSvc.resolveByReference(ctx.companyId, reference);
+      if (resolved.ambiguous) {
+        const candidates = (await projectSvc.list(ctx.companyId))
+          .filter((project) => normalizeProjectUrlKey(project.name) === normalizeProjectUrlKey(reference))
+          .map((project) => ({
+            id: project.id,
+            label: project.name,
+            ref: project.urlKey,
+          }));
+        throwToolConflict({
+          message: `Project reference "${reference}" is ambiguous in this company.`,
+          entityType: "project",
+          reference,
+          candidates,
+          hint: "Use the exact project ID or a more specific project name/urlKey.",
+        });
+      }
+      if (!resolved.project) {
+        throwToolNotFound({
+          message: `Project "${reference}" was not found in this company.`,
+          entityType: "project",
+          reference,
+          hint: "Call list_projects first or use the exact project name/urlKey.",
+        });
+      }
+      const project = await projectSvc.getById(resolved.project.id);
+      if (!project) {
+        throwToolNotFound({
+          message: `Project "${reference}" was not found in this company.`,
+          entityType: "project",
+          reference,
+        });
+      }
+      return project;
+    };
+
+    if (selector.id) {
+      const project = await projectSvc.getById(selector.id);
+      if (!project) {
+        throwToolNotFound({
+          message: `Project "${selector.id}" was not found.`,
+          entityType: "project",
+          reference: selector.id,
+        });
+      }
+      if (project.companyId !== ctx.companyId) {
+        throwToolForbiddenScope({
+          message: "Project does not belong to the active company.",
+          entityType: "project",
+          reference: selector.id,
+          hint: "Use a project from the current company only.",
+        });
+      }
+      if (selector.ref) {
+        const resolvedByRef = await matchReference(selector.ref);
+        if (resolvedByRef.id !== project.id) {
+          throwToolBadReference({
+            message: "Provided projectId and projectRef point to different projects.",
+            entityType: "project",
+            reference: selector.ref,
+            candidates: [{
+              id: project.id,
+              label: project.name,
+              ref: project.urlKey,
+            }],
+            hint: "Pass either the exact project ID or the matching project ref, not conflicting selectors.",
+          });
+        }
+      }
+      return project;
+    }
+
+    return await matchReference(selector.reference!);
+  }
+
+  async function resolveExecutionWorkspaceTarget(
+    ctx: HomeToolContext,
+    input: Record<string, unknown>,
+    options: {
+      idField?: string;
+      refField?: string;
+      requiredMessage?: string;
+    } = {},
+  ) {
+    const idField = options.idField ?? "executionWorkspaceId";
+    const refField = options.refField ?? "executionWorkspaceRef";
+    const selector = pickRefSelector(input, idField, refField);
+    if (!selector.id && !selector.reference) {
+      throwToolBadReference({
+        message: options.requiredMessage ?? `${idField} or ${refField} is required`,
+        entityType: "execution_workspace",
+        hint: "Use the execution workspace UUID or exact execution workspace name.",
+      });
+    }
+
+    const matchReference = async (reference: string) => {
+      const normalized = normalizeLooseRef(reference);
+      const matches = (await executionWorkspaces.listSummaries(ctx.companyId))
+        .filter((workspace) => normalizeLooseRef(workspace.name) === normalized);
+      if (matches.length > 1) {
+        throwToolConflict({
+          message: `Execution workspace reference "${reference}" is ambiguous in this company.`,
+          entityType: "execution_workspace",
+          reference,
+          candidates: buildNamedCandidates(matches, {
+            id: (row) => row.id,
+            label: (row) => row.name,
+            ref: (row) => row.name,
+          }),
+          hint: "Use the execution workspace UUID or a more specific workspace name.",
+        });
+      }
+      const match = matches[0] ?? null;
+      if (!match) {
+        throwToolNotFound({
+          message: `Execution workspace "${reference}" was not found in this company.`,
+          entityType: "execution_workspace",
+          reference,
+          hint: "Call list_execution_workspaces first or use the exact execution workspace name.",
+        });
+      }
+      const workspace = await executionWorkspaces.getById(match.id);
+      if (!workspace) {
+        throwToolNotFound({
+          message: `Execution workspace "${reference}" was not found in this company.`,
+          entityType: "execution_workspace",
+          reference,
+        });
+      }
+      return workspace;
+    };
+
+    if (selector.id) {
+      const workspace = await executionWorkspaces.getById(selector.id);
+      if (!workspace) {
+        throwToolNotFound({
+          message: `Execution workspace "${selector.id}" was not found.`,
+          entityType: "execution_workspace",
+          reference: selector.id,
+        });
+      }
+      if (workspace.companyId !== ctx.companyId) {
+        throwToolForbiddenScope({
+          message: "Execution workspace does not belong to the active company.",
+          entityType: "execution_workspace",
+          reference: selector.id,
+          hint: "Use an execution workspace from the current company only.",
+        });
+      }
+      if (selector.ref) {
+        const resolvedByRef = await matchReference(selector.ref);
+        if (resolvedByRef.id !== workspace.id) {
+          throwToolBadReference({
+            message: "Provided executionWorkspaceId and executionWorkspaceRef point to different workspaces.",
+            entityType: "execution_workspace",
+            reference: selector.ref,
+            candidates: [{
+              id: workspace.id,
+              label: workspace.name,
+              ref: workspace.name,
+            }],
+            hint: "Pass either the exact execution workspace ID or the matching ref, not conflicting selectors.",
+          });
+        }
+      }
+      return workspace;
+    }
+
+    return await matchReference(selector.reference!);
+  }
+
   async function getProjectWorkspaceRowById(ctx: HomeToolContext, projectWorkspaceId: string) {
     return await db
       .select({
         id: projectWorkspaces.id,
         companyId: projectWorkspaces.companyId,
         projectId: projectWorkspaces.projectId,
+        name: projectWorkspaces.name,
       })
       .from(projectWorkspaces)
       .where(
@@ -333,67 +855,312 @@ export function createHomeToolDispatcher(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function resolveRestartPreviewTarget(
-    ctx: HomeToolContext,
-    input: Record<string, unknown>,
-  ): Promise<RestartPreviewTarget> {
-    const executionWorkspaceId = asString(input.executionWorkspaceId);
-    const projectId = asString(input.projectId);
-    const projectWorkspaceId = asString(input.projectWorkspaceId);
-    const runtimeServiceId = asString(input.runtimeServiceId);
-
-    if (executionWorkspaceId && (projectId || projectWorkspaceId)) {
-      throw badRequest("Provide either executionWorkspaceId or projectId/projectWorkspaceId when restarting a preview runtime");
-    }
-
-    if (executionWorkspaceId) {
-      return {
-        kind: "execution_workspace",
-        executionWorkspaceId,
-        runtimeServiceId,
-      };
-    }
-
-    if (projectId || projectWorkspaceId) {
-      const projectWorkspaceRow = projectWorkspaceId
-        ? await getProjectWorkspaceRowById(ctx, projectWorkspaceId)
-        : null;
-      if (projectWorkspaceId && !projectWorkspaceRow) {
-        throw notFound("Project workspace not found");
+  async function resolveProjectWorkspaceReferenceTarget(input: {
+    ctx: HomeToolContext;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+    projectWorkspaceRef: string | null;
+  }) {
+    if (input.projectWorkspaceId) {
+      const row = await getProjectWorkspaceRowById(input.ctx, input.projectWorkspaceId);
+      if (!row) {
+        throwToolNotFound({
+          message: `Project workspace "${input.projectWorkspaceId}" was not found.`,
+          entityType: "project_workspace",
+          reference: input.projectWorkspaceId,
+        });
       }
-      return {
-        kind: "project_workspace",
-        projectId: projectId ?? projectWorkspaceRow!.projectId,
-        projectWorkspaceId,
-        runtimeServiceId,
-      };
+      if (input.projectId && row.projectId !== input.projectId) {
+        throwToolBadReference({
+          message: "Provided projectId and projectWorkspaceId point to different project workspaces.",
+          entityType: "project_workspace",
+          reference: input.projectWorkspaceId,
+          candidates: [{
+            id: row.id,
+            label: row.name,
+            ref: row.name,
+          }],
+          hint: "Use a project workspace that belongs to the selected project.",
+        });
+      }
+      if (
+        input.projectWorkspaceRef
+        && normalizeLooseRef(row.name) !== normalizeLooseRef(input.projectWorkspaceRef)
+      ) {
+        throwToolBadReference({
+          message: "Provided projectWorkspaceId and projectWorkspaceRef point to different workspaces.",
+          entityType: "project_workspace",
+          reference: input.projectWorkspaceRef,
+          candidates: [{
+            id: row.id,
+            label: row.name,
+            ref: row.name,
+          }],
+          hint: "Pass either the exact project workspace ID or the matching workspace name, not conflicting selectors.",
+        });
+      }
+      return row;
     }
 
-    if (runtimeServiceId) {
-      const runtimeService = await db
+    if (!input.projectWorkspaceRef) return null;
+
+    const normalized = normalizeLooseRef(input.projectWorkspaceRef);
+    const rows = await db
+      .select({
+        id: projectWorkspaces.id,
+        companyId: projectWorkspaces.companyId,
+        projectId: projectWorkspaces.projectId,
+        name: projectWorkspaces.name,
+      })
+      .from(projectWorkspaces)
+      .where(
+        and(
+          eq(projectWorkspaces.companyId, input.ctx.companyId),
+          ...(input.projectId ? [eq(projectWorkspaces.projectId, input.projectId)] : []),
+        ),
+      );
+
+    const matches = rows.filter((row) => normalizeLooseRef(row.name) === normalized);
+    if (matches.length > 1) {
+      throwToolConflict({
+        message: `Project workspace reference "${input.projectWorkspaceRef}" is ambiguous in this company.`,
+        entityType: "project_workspace",
+        reference: input.projectWorkspaceRef,
+        candidates: buildNamedCandidates(matches, {
+          id: (row) => row.id,
+          label: (row) => row.name,
+          ref: (row) => row.name,
+        }),
+        hint: input.projectId
+          ? "Use the project workspace UUID if multiple workspaces in this project share that name."
+          : "Use the project workspace UUID or also pass a project ref to narrow the match.",
+      });
+    }
+    const match = matches[0] ?? null;
+    if (!match) {
+      throwToolNotFound({
+        message: `Project workspace "${input.projectWorkspaceRef}" was not found in this company.`,
+        entityType: "project_workspace",
+        reference: input.projectWorkspaceRef,
+        hint: "Use the exact project workspace name or call list_projects first.",
+      });
+    }
+    return match;
+  }
+
+  async function resolveRuntimeServiceReferenceTarget(input: {
+    ctx: HomeToolContext;
+    runtimeServiceId: string | null;
+    runtimeServiceRef: string | null;
+    executionWorkspaceId?: string | null;
+    projectId?: string | null;
+    projectWorkspaceId?: string | null;
+  }) {
+    if (input.runtimeServiceId) {
+      const row = await db
         .select({
           id: workspaceRuntimeServices.id,
           companyId: workspaceRuntimeServices.companyId,
           projectId: workspaceRuntimeServices.projectId,
           projectWorkspaceId: workspaceRuntimeServices.projectWorkspaceId,
           executionWorkspaceId: workspaceRuntimeServices.executionWorkspaceId,
+          serviceName: workspaceRuntimeServices.serviceName,
+          url: workspaceRuntimeServices.url,
         })
         .from(workspaceRuntimeServices)
         .where(
           and(
-            eq(workspaceRuntimeServices.id, runtimeServiceId),
-            eq(workspaceRuntimeServices.companyId, ctx.companyId),
+            eq(workspaceRuntimeServices.id, input.runtimeServiceId),
+            eq(workspaceRuntimeServices.companyId, input.ctx.companyId),
           ),
         )
         .then((rows) => rows[0] ?? null);
+      if (!row) {
+        throwToolNotFound({
+          message: `Runtime service "${input.runtimeServiceId}" was not found in this company.`,
+          entityType: "runtime_service",
+          reference: input.runtimeServiceId,
+        });
+      }
+      if (
+        input.runtimeServiceRef
+        && normalizeLooseRef(row.serviceName) !== normalizeLooseRef(input.runtimeServiceRef)
+        && normalizeLooseRef(row.url) !== normalizeLooseRef(input.runtimeServiceRef)
+      ) {
+        throwToolBadReference({
+          message: "Provided runtimeServiceId and runtimeServiceRef point to different runtime services.",
+          entityType: "runtime_service",
+          reference: input.runtimeServiceRef,
+          candidates: [{
+            id: row.id,
+            label: row.url ? `${row.serviceName} (${row.url})` : row.serviceName,
+            ref: row.serviceName,
+          }],
+          hint: "Pass either the exact runtime service ID or the matching service name/URL, not conflicting selectors.",
+        });
+      }
+      return row;
+    }
+
+    if (!input.runtimeServiceRef) return null;
+
+    const normalized = normalizeLooseRef(input.runtimeServiceRef);
+    const rows = await db
+      .select({
+        id: workspaceRuntimeServices.id,
+        companyId: workspaceRuntimeServices.companyId,
+        projectId: workspaceRuntimeServices.projectId,
+        projectWorkspaceId: workspaceRuntimeServices.projectWorkspaceId,
+        executionWorkspaceId: workspaceRuntimeServices.executionWorkspaceId,
+        serviceName: workspaceRuntimeServices.serviceName,
+        url: workspaceRuntimeServices.url,
+      })
+      .from(workspaceRuntimeServices)
+      .where(eq(workspaceRuntimeServices.companyId, input.ctx.companyId));
+
+    const scopedRows = rows.filter((row) => {
+      if (input.executionWorkspaceId && row.executionWorkspaceId !== input.executionWorkspaceId) return false;
+      if (input.projectWorkspaceId && row.projectWorkspaceId !== input.projectWorkspaceId) return false;
+      if (input.projectId && row.projectId !== input.projectId) return false;
+      return true;
+    });
+
+    const matches = scopedRows.filter((row) =>
+      normalizeLooseRef(row.serviceName) === normalized
+      || normalizeLooseRef(row.url) === normalized
+    );
+    if (matches.length > 1) {
+      throwToolConflict({
+        message: `Runtime service reference "${input.runtimeServiceRef}" is ambiguous in this company.`,
+        entityType: "runtime_service",
+        reference: input.runtimeServiceRef,
+        candidates: buildNamedCandidates(matches, {
+          id: (row) => row.id,
+          label: (row) => row.url ? `${row.serviceName} (${row.url})` : row.serviceName,
+          ref: (row) => row.serviceName,
+        }),
+        hint: "Use the runtime service UUID or narrow the request with a project/workspace reference.",
+      });
+    }
+    const match = matches[0] ?? null;
+    if (!match) {
+      throwToolNotFound({
+        message: `Runtime service "${input.runtimeServiceRef}" was not found in this company.`,
+        entityType: "runtime_service",
+        reference: input.runtimeServiceRef,
+        hint: "Use the exact runtime service ID/name or call get_active_preview first.",
+      });
+    }
+    return match;
+  }
+
+  async function resolveRestartPreviewTarget(
+    ctx: HomeToolContext,
+    input: Record<string, unknown>,
+  ): Promise<RestartPreviewTarget> {
+    const executionWorkspaceSelector = pickRefSelector(input, "executionWorkspaceId", "executionWorkspaceRef");
+    const projectSelector = pickRefSelector(input, "projectId", "projectRef");
+    const projectWorkspaceSelector = pickRefSelector(input, "projectWorkspaceId", "projectWorkspaceRef");
+    const runtimeServiceSelector = pickRefSelector(input, "runtimeServiceId", "runtimeServiceRef");
+
+    const hasExecutionWorkspaceSelector = Boolean(executionWorkspaceSelector.id || executionWorkspaceSelector.reference);
+    const hasProjectSelector = Boolean(projectSelector.id || projectSelector.reference);
+    const hasProjectWorkspaceSelector = Boolean(projectWorkspaceSelector.id || projectWorkspaceSelector.reference);
+    const hasRuntimeServiceSelector = Boolean(runtimeServiceSelector.id || runtimeServiceSelector.reference);
+
+    if (hasExecutionWorkspaceSelector && (hasProjectSelector || hasProjectWorkspaceSelector)) {
+      throwToolBadReference({
+        message: "Provide either executionWorkspaceId/executionWorkspaceRef or project/project workspace selectors when restarting a preview runtime.",
+        entityType: "runtime_service",
+        hint: "Use one target path only: execution workspace or project/project workspace.",
+      });
+    }
+
+    if (hasExecutionWorkspaceSelector) {
+      const executionWorkspace = await resolveExecutionWorkspaceTarget(ctx, input);
+      const runtimeService = hasRuntimeServiceSelector
+        ? await resolveRuntimeServiceReferenceTarget({
+          ctx,
+          runtimeServiceId: runtimeServiceSelector.id,
+          runtimeServiceRef: runtimeServiceSelector.reference,
+          executionWorkspaceId: executionWorkspace.id,
+        })
+        : null;
+      return {
+        kind: "execution_workspace",
+        executionWorkspaceId: executionWorkspace.id,
+        runtimeServiceId: runtimeService?.id ?? null,
+      };
+    }
+
+    if (hasProjectSelector || hasProjectWorkspaceSelector) {
+      const project = hasProjectSelector
+        ? await resolveProjectTarget(ctx, input)
+        : null;
+      const projectWorkspace = hasProjectWorkspaceSelector
+        ? await resolveProjectWorkspaceReferenceTarget({
+          ctx,
+          projectId: project?.id ?? null,
+          projectWorkspaceId: projectWorkspaceSelector.id,
+          projectWorkspaceRef: projectWorkspaceSelector.reference,
+        })
+        : null;
+      if (project && projectWorkspace && projectWorkspace.projectId !== project.id) {
+        throwToolBadReference({
+          message: "Provided projectId and projectWorkspace selectors point to different project workspaces.",
+          entityType: "project_workspace",
+          reference: projectWorkspaceSelector.reference ?? projectWorkspaceSelector.id,
+          candidates: [{
+            id: projectWorkspace.id,
+            label: projectWorkspace.name,
+            ref: projectWorkspace.name,
+          }],
+          hint: "Use a project workspace that belongs to the selected project.",
+        });
+      }
+      const resolvedProjectId = project?.id ?? projectWorkspace?.projectId ?? null;
+      if (!resolvedProjectId) {
+        throwToolBadReference({
+          message: "Project or project workspace reference is required to restart a project preview runtime.",
+          entityType: "project",
+          hint: "Use the project UUID/name or the project workspace UUID/name.",
+        });
+      }
+      const runtimeService = hasRuntimeServiceSelector
+        ? await resolveRuntimeServiceReferenceTarget({
+          ctx,
+          runtimeServiceId: runtimeServiceSelector.id,
+          runtimeServiceRef: runtimeServiceSelector.reference,
+          projectId: resolvedProjectId,
+          projectWorkspaceId: projectWorkspace?.id ?? null,
+        })
+        : null;
+      return {
+        kind: "project_workspace",
+        projectId: resolvedProjectId,
+        projectWorkspaceId: projectWorkspace?.id ?? null,
+        runtimeServiceId: runtimeService?.id ?? null,
+      };
+    }
+
+    if (hasRuntimeServiceSelector) {
+      const runtimeService = await resolveRuntimeServiceReferenceTarget({
+        ctx,
+        runtimeServiceId: runtimeServiceSelector.id,
+        runtimeServiceRef: runtimeServiceSelector.reference,
+      });
       if (!runtimeService) {
-        throw notFound("Runtime service not found");
+        throwToolBadReference({
+          message: "runtimeServiceId or runtimeServiceRef is required to target a runtime service.",
+          entityType: "runtime_service",
+          hint: "Use the runtime service UUID, name, or URL.",
+        });
       }
       if (runtimeService.executionWorkspaceId) {
         return {
           kind: "execution_workspace",
           executionWorkspaceId: runtimeService.executionWorkspaceId,
-          runtimeServiceId,
+          runtimeServiceId: runtimeService.id,
         };
       }
       if (runtimeService.projectId || runtimeService.projectWorkspaceId) {
@@ -408,14 +1175,14 @@ export function createHomeToolDispatcher(db: Db) {
           kind: "project_workspace",
           projectId: resolvedProjectId,
           projectWorkspaceId: runtimeService.projectWorkspaceId ?? null,
-          runtimeServiceId,
+          runtimeServiceId: runtimeService.id,
         };
       }
       throw badRequest("Runtime service is not attached to a controllable workspace");
     }
 
     throw badRequest(
-      "Need executionWorkspaceId, projectId, projectWorkspaceId, or runtimeServiceId to restart a preview runtime",
+      "Need executionWorkspaceId/executionWorkspaceRef, projectId/projectRef, projectWorkspaceId/projectWorkspaceRef, or runtimeServiceId/runtimeServiceRef to restart a preview runtime",
     );
   }
 
@@ -700,7 +1467,7 @@ export function createHomeToolDispatcher(db: Db) {
     {
       name: "create_issue",
       displayName: "Create agenda item",
-      description: "Create a new company agenda item/issue.",
+      description: "Create a new company agenda item/issue. Project and assignee selectors may use a UUID or a company-local human ref.",
       category: "agenda",
       riskLevel: "low",
       keywords: ["create issue", "new task", "agenda", "todo", "assign work", "make task"],
@@ -709,20 +1476,36 @@ export function createHomeToolDispatcher(db: Db) {
         description: stringProperty("Optional issue description."),
         priority: stringProperty("Priority: low, medium, high, critical."),
         status: stringProperty("Initial status, usually todo or backlog."),
-        assigneeAgentId: stringProperty("Optional agent id to assign."),
-        projectId: stringProperty("Optional project id."),
+        assigneeAgentId: stringProperty("Optional agent UUID. If this is not a UUID, Archie treats it as an agent ref."),
+        assigneeAgentRef: stringProperty("Optional company-local agent name or urlKey."),
+        projectId: stringProperty("Optional project UUID. If this is not a UUID, Archie treats it as a project ref."),
+        projectRef: stringProperty("Optional company-local project name or urlKey."),
         labelIds: { type: "array", items: { type: "string" }, description: "Optional label ids." },
       }, ["title"]),
       handler: async (ctx, input) => {
         const title = asString(input.title);
         if (!title) throw badRequest("title is required");
+        const assignee = asString(input.assigneeAgentId) || asString(input.assigneeAgentRef)
+          ? await resolveAgentTarget(ctx, input, {
+            idField: "assigneeAgentId",
+            refField: "assigneeAgentRef",
+            requiredMessage: "assigneeAgentId or assigneeAgentRef is required when assigning an issue",
+          })
+          : null;
+        const project = asString(input.projectId) || asString(input.projectRef)
+          ? await resolveProjectTarget(ctx, input, {
+            idField: "projectId",
+            refField: "projectRef",
+            requiredMessage: "projectId or projectRef is required when assigning an issue to a project",
+          })
+          : null;
         const issue = await issueSvc.create(ctx.companyId, {
           title,
           description: asString(input.description),
           priority: asString(input.priority) ?? "medium",
           status: asString(input.status) ?? "todo",
-          assigneeAgentId: asString(input.assigneeAgentId),
-          projectId: asString(input.projectId),
+          assigneeAgentId: assignee?.id ?? null,
+          projectId: project?.id ?? null,
           labelIds: asStringArray(input.labelIds),
           createdByUserId: ctx.ownerUserId,
         });
@@ -743,20 +1526,20 @@ export function createHomeToolDispatcher(db: Db) {
     {
       name: "update_issue_status",
       displayName: "Update agenda status",
-      description: "Change an issue status or priority.",
+      description: "Change an issue status or priority. Issue selectors may use a UUID, issue identifier, or exact issue title in the active company.",
       category: "agenda",
       riskLevel: "low",
       keywords: ["update issue", "change status", "mark done", "mark blocked", "priority"],
       inputSchema: objectSchema({
-        issueId: stringProperty("Issue id."),
+        issueId: stringProperty("Issue UUID. If this is not a UUID, Archie treats it as an issue ref."),
+        issueRef: stringProperty("Issue identifier or exact issue title."),
         status: stringProperty("New status."),
         priority: stringProperty("Optional priority."),
         comment: stringProperty("Optional comment to append with the update."),
-      }, ["issueId"]),
+      }),
       handler: async (ctx, input) => {
-        const issueId = asString(input.issueId);
-        if (!issueId) throw badRequest("issueId is required");
-        await assertCompanyEntityAccess(ctx, "issue", issueId);
+        const issue = await resolveIssueTarget(ctx, input);
+        const issueId = issue.id;
         const updated = await issueSvc.update(issueId, {
           status: asString(input.status) ?? undefined,
           priority: asString(input.priority) ?? undefined,
@@ -788,15 +1571,17 @@ export function createHomeToolDispatcher(db: Db) {
     {
       name: "pause_agent",
       displayName: "Pause agent",
-      description: "Pause an agent in the active company.",
+      description: "Pause an agent in the active company. You may pass the agent UUID or a company-local agent ref.",
       category: "agents",
       riskLevel: "low",
       keywords: ["pause agent", "stop agent", "hold worker", "disable agent"],
-      inputSchema: objectSchema({ agentId: stringProperty("Agent id.") }, ["agentId"]),
+      inputSchema: objectSchema({
+        agentId: stringProperty("Agent UUID. If this is not a UUID, Archie treats it as an agent ref."),
+        agentRef: stringProperty("Company-local agent name or urlKey."),
+      }),
       handler: async (ctx, input) => {
-        const agentId = asString(input.agentId);
-        if (!agentId) throw badRequest("agentId is required");
-        await assertCompanyEntityAccess(ctx, "agent", agentId);
+        const targetAgent = await resolveAgentTarget(ctx, input);
+        const agentId = targetAgent.id;
         const agent = await agentSvc.pause(agentId, "manual");
         if (!agent) throw notFound("Agent not found");
         await logActivity(db, {
@@ -816,15 +1601,17 @@ export function createHomeToolDispatcher(db: Db) {
     {
       name: "resume_agent",
       displayName: "Resume agent",
-      description: "Resume a paused agent in the active company.",
+      description: "Resume a paused agent in the active company. You may pass the agent UUID or a company-local agent ref.",
       category: "agents",
       riskLevel: "low",
       keywords: ["resume agent", "unpause agent", "start agent", "reactivate worker"],
-      inputSchema: objectSchema({ agentId: stringProperty("Agent id.") }, ["agentId"]),
+      inputSchema: objectSchema({
+        agentId: stringProperty("Agent UUID. If this is not a UUID, Archie treats it as an agent ref."),
+        agentRef: stringProperty("Company-local agent name or urlKey."),
+      }),
       handler: async (ctx, input) => {
-        const agentId = asString(input.agentId);
-        if (!agentId) throw badRequest("agentId is required");
-        await assertCompanyEntityAccess(ctx, "agent", agentId);
+        const targetAgent = await resolveAgentTarget(ctx, input);
+        const agentId = targetAgent.id;
         const agent = await agentSvc.resume(agentId);
         if (!agent) throw notFound("Agent not found");
         await logActivity(db, {
@@ -904,15 +1691,19 @@ export function createHomeToolDispatcher(db: Db) {
     {
       name: "restart_preview_runtime",
       displayName: "Restart preview runtime",
-      description: "Restart a selected project or execution workspace runtime service.",
+      description: "Restart a selected project or execution workspace runtime service. Target selectors may use UUIDs or company-local refs.",
       category: "projects",
       riskLevel: "risky",
       keywords: ["restart preview", "restart runtime", "refresh app", "start preview", "stop preview"],
       inputSchema: objectSchema({
-        executionWorkspaceId: stringProperty("Execution workspace id when restarting an execution workspace runtime."),
-        projectId: stringProperty("Project id when restarting a project workspace runtime."),
-        projectWorkspaceId: stringProperty("Project workspace id when restarting a project workspace runtime."),
-        runtimeServiceId: stringProperty("Optional runtime service id."),
+        executionWorkspaceId: stringProperty("Execution workspace UUID. If this is not a UUID, Archie treats it as an execution workspace ref."),
+        executionWorkspaceRef: stringProperty("Execution workspace name."),
+        projectId: stringProperty("Project UUID. If this is not a UUID, Archie treats it as a project ref."),
+        projectRef: stringProperty("Company-local project name or urlKey."),
+        projectWorkspaceId: stringProperty("Project workspace UUID. If this is not a UUID, Archie treats it as a project workspace ref."),
+        projectWorkspaceRef: stringProperty("Project workspace name."),
+        runtimeServiceId: stringProperty("Runtime service UUID. If this is not a UUID, Archie treats it as a runtime service ref."),
+        runtimeServiceRef: stringProperty("Runtime service name or URL."),
       }),
       handler: async (ctx, input) => {
         const target = await resolveRestartPreviewTarget(ctx, input);
@@ -1062,14 +1853,16 @@ export function createHomeToolDispatcher(db: Db) {
     {
       name: "update_budget",
       displayName: "Update budget",
-      description: "Update company or agent budget settings.",
+      description: "Update company, agent, or project budget settings. Agent and project selectors may use UUIDs or company-local refs.",
       category: "costs",
       riskLevel: "risky",
       keywords: ["update budget", "raise budget", "lower budget", "spend limit"],
       inputSchema: objectSchema({
         scope: stringProperty("company, agent, or project."),
-        agentId: stringProperty("Agent id for agent budget changes."),
-        projectId: stringProperty("Project id for project budget changes."),
+        agentId: stringProperty("Agent UUID for agent budget changes. If this is not a UUID, Archie treats it as an agent ref."),
+        agentRef: stringProperty("Company-local agent name or urlKey for agent budget changes."),
+        projectId: stringProperty("Project UUID for project budget changes. If this is not a UUID, Archie treats it as a project ref."),
+        projectRef: stringProperty("Company-local project name or urlKey for project budget changes."),
         monthlyCents: numberProperty("Monthly budget in cents."),
         warnPercent: numberProperty("Warn percentage, from 1 to 99.", { minimum: 1, maximum: 99 }),
         hardStopEnabled: booleanProperty("Whether budget hard-stop is enabled."),
@@ -1086,18 +1879,16 @@ export function createHomeToolDispatcher(db: Db) {
           scopeId = ctx.companyId;
           await companiesSvc.update(ctx.companyId, { budgetMonthlyCents: amount });
         } else if (scope === "agent") {
-          const agentId = asString(input.agentId);
-          if (!agentId) throw badRequest("agentId is required for agent budget updates");
-          const agent = await assertCompanyEntityAccess(ctx, "agent", agentId);
+          const agent = await resolveAgentTarget(ctx, input, {
+            requiredMessage: "agentId or agentRef is required for agent budget updates",
+          });
           scopeType = "agent";
           scopeId = agent.id;
           await agentSvc.update(agent.id, { budgetMonthlyCents: amount });
         } else if (scope === "project") {
-          const projectId = asString(input.projectId);
-          if (!projectId) throw badRequest("projectId is required for project budget updates");
-          const project = await projectSvc.getById(projectId);
-          if (!project) throw notFound("Project not found");
-          if (project.companyId !== ctx.companyId) throw forbidden("Project does not belong to the active company");
+          const project = await resolveProjectTarget(ctx, input, {
+            requiredMessage: "projectId or projectRef is required for project budget updates",
+          });
           scopeType = "project";
           scopeId = project.id;
         } else {
@@ -1261,6 +2052,28 @@ export function createHomeToolDispatcher(db: Db) {
       .map(publicDescriptor);
   }
 
+  function expandSelectionWithCompanions(tools: HomeToolDescriptor[], limit: number) {
+    const seen = new Set<string>();
+    const expanded: HomeToolDescriptor[] = [];
+
+    const pushTool = (tool: HomeToolDescriptor | undefined | null) => {
+      if (!tool || seen.has(tool.name) || expanded.length >= limit) return;
+      seen.add(tool.name);
+      expanded.push(tool);
+    };
+
+    for (const tool of tools) {
+      pushTool(tool);
+      const companionNames = HOME_TOOL_COMPANIONS[tool.name] ?? [];
+      for (const companionName of companionNames) {
+        pushTool(getTool(companionName));
+      }
+      if (expanded.length >= limit) break;
+    }
+
+    return expanded;
+  }
+
   function selectTools(query: string, options: {
     category?: string | null;
     limit?: number;
@@ -1290,7 +2103,7 @@ export function createHomeToolDispatcher(db: Db) {
       if (selectedTools.length >= limit) break;
     }
 
-    if (selectedTools.length < limit) {
+      if (selectedTools.length < limit) {
       for (const fallbackEntry of fallbackEntries) {
         const tool = byName.get(fallbackEntry.item.name);
         if (!tool || selectedNames.has(tool.name)) continue;
@@ -1300,11 +2113,24 @@ export function createHomeToolDispatcher(db: Db) {
       }
     }
 
+    const expandedTools = expandSelectionWithCompanions(selectedTools, limit);
+
+    if (expandedTools.length < limit) {
+      for (const fallbackEntry of fallbackEntries) {
+        const tool = byName.get(fallbackEntry.item.name);
+        if (!tool) continue;
+        const descriptor = publicDescriptor(tool);
+        if (expandedTools.some((entry) => entry.name === descriptor.name)) continue;
+        expandedTools.push(descriptor);
+        if (expandedTools.length >= limit) break;
+      }
+    }
+
     return {
       query,
       isCapabilityQuery: capabilityMode,
       limit,
-      tools: selectedTools,
+      tools: expandedTools,
     };
   }
 

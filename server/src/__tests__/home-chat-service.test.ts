@@ -294,6 +294,79 @@ describeEmbeddedPostgres("home chat service", () => {
     expect(assistantMessage.content).toBe("Use pause_agent.");
   });
 
+  it("executes agent actions end to end with human-readable refs", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-agent-ref-tools-${randomUUID()}`;
+    const company = await insertCompany(db, "Agent Ref Tool Company");
+    await insertUser(db, userId, "Agent Ref Tool User");
+    await db
+      .insert(agents)
+      .values({
+        companyId: company.id,
+        name: "CEO",
+        role: "general",
+        title: "Chief Executive Officer",
+        model: "test-model",
+        status: "idle",
+      });
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-list-agents",
+            name: "list_agents",
+            arguments: JSON.stringify({}),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-pause-agent-ref",
+            name: "pause_agent",
+            arguments: JSON.stringify({ agentRef: "CEO" }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "Paused the CEO agent." },
+      ]));
+
+    const events: Array<{ type: string; name?: string; error?: string }> = [];
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "Pause the CEO agent.",
+      modelId: "gpt-5.4",
+      onEvent: (event) => {
+        if ("name" in event) {
+          events.push({
+            type: event.type,
+            name: event.name,
+            error: "error" in event ? event.error : undefined,
+          });
+        } else {
+          events.push({ type: event.type });
+        }
+      },
+    });
+
+    expect(events).toEqual(expect.arrayContaining([
+      { type: "tool_call_requested", name: "pause_agent", error: undefined },
+      { type: "tool_call_started", name: "pause_agent", error: undefined },
+      { type: "tool_call_result", name: "pause_agent", error: undefined },
+    ]));
+    expect(events.find((event) => event.type === "tool_call_failed")).toBeUndefined();
+    expect(assistantMessage.content).toBe("Paused the CEO agent.");
+  });
+
   it("widens direct internal tool exposure for capability questions without wrapper tools", async () => {
     process.env.OPENAI_API_KEY = "openai-test-key";
     const userId = `user-capability-tools-${randomUUID()}`;
@@ -375,6 +448,91 @@ describeEmbeddedPostgres("home chat service", () => {
 
     expect(toolEvents).toEqual([]);
     expect(openAICreateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces structured ambiguous-reference failures for Home tools", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-ambiguous-agent-tool-${randomUUID()}`;
+    const company = await insertCompany(db, "Ambiguous Agent Tool Company");
+    await insertUser(db, userId, "Ambiguous Agent Tool User");
+    await db.insert(agents).values([
+      {
+        companyId: company.id,
+        name: "CEO",
+        role: "general",
+        title: "Chief Executive Officer",
+        model: "test-model",
+        status: "idle",
+      },
+      {
+        companyId: company.id,
+        name: "Ceo",
+        role: "general",
+        title: "Executive Lead",
+        model: "test-model",
+        status: "idle",
+      },
+    ]);
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-pause-agent-ambiguous",
+            name: "pause_agent",
+            arguments: JSON.stringify({ agentRef: "CEO" }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "I found multiple matching agents. Use a more specific reference." },
+      ]));
+
+    const toolEvents: Array<{ type: string; name?: string; error?: string; data?: unknown }> = [];
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "Pause the CEO agent.",
+      modelId: "gpt-5.4",
+      onEvent: (event) => {
+        if (
+          event.type === "tool_call_failed"
+          || event.type === "tool_call_requested"
+          || event.type === "tool_call_started"
+          || event.type === "tool_call_result"
+        ) {
+          toolEvents.push({
+            type: event.type,
+            name: event.name,
+            error: "error" in event ? event.error : undefined,
+            data: "data" in event ? event.data : undefined,
+          });
+        }
+      },
+    });
+
+    const failedEvent = toolEvents.find((event) => event.type === "tool_call_failed");
+    expect(failedEvent).toMatchObject({
+      name: "pause_agent",
+      error: 'Agent reference "CEO" is ambiguous in this company.',
+      data: expect.objectContaining({
+        code: "ambiguous_reference",
+        entityType: "agent",
+        reference: "CEO",
+      }),
+    });
+    expect(openAICreateMock.mock.calls[1]?.[0]?.input).toEqual(expect.arrayContaining([
+      {
+        type: "function_call_output",
+        call_id: "call-pause-agent-ambiguous",
+        output: expect.stringContaining('"code": "ambiguous_reference"'),
+      },
+    ]));
+    expect(assistantMessage.content).toBe("I found multiple matching agents. Use a more specific reference.");
   });
 
   it("auto-executes risky OpenAI tool calls exactly once", async () => {

@@ -65,6 +65,27 @@ export type HomeChatToolRiskLevel = "safe" | "low" | "risky";
 
 export type HomeChatToolSourceKind = "internal" | "integrations";
 
+export type HomeChatToolFailureCode =
+  | "invalid_reference"
+  | "not_found"
+  | "ambiguous_reference"
+  | "forbidden_company_scope"
+  | "conflict";
+
+export interface HomeChatToolFailureCandidate {
+  id?: string;
+  label: string;
+  ref?: string;
+}
+
+export interface HomeChatToolFailureData {
+  code: HomeChatToolFailureCode;
+  entityType?: string;
+  reference?: string;
+  candidates?: HomeChatToolFailureCandidate[];
+  hint?: string;
+}
+
 export interface HomeChatToolCallRequestedEvent {
   type: "tool_call_requested";
   toolCallId: string;
@@ -96,6 +117,7 @@ export interface HomeChatToolCallFailedEvent {
   name: string;
   displayName: string;
   error: string;
+  data?: HomeChatToolFailureData;
 }
 
 export interface HomeChatErrorEvent {

@@ -10,12 +10,13 @@ import {
   type HomeChatMessage,
   type HomeChatModel,
   type HomeChatProvider,
+  type HomeChatToolFailureData,
   type HomeChatStreamEvent,
   type HomeChatThread,
   type HomeChatThreadSummary,
   type UpdateHomeChatThread,
 } from "@paperclipai/shared/home-chat";
-import { badRequest, notFound, unprocessable } from "../errors.js";
+import { HttpError, badRequest, notFound, unprocessable } from "../errors.js";
 import {
   createHomeToolDispatcher,
   type HomeToolContext,
@@ -122,6 +123,7 @@ function buildSystemPrompt(input: {
     "You receive only a bounded subset of relevant Home tools on each turn. Use a tool directly when it clearly matches the user's request.",
     "If the user asks what Archie can do, summarize only the tools exposed on this turn and do not invent hidden capabilities.",
     "Never invent URLs or call raw endpoints. Never request or expose platform/server/admin controls. Never ask the user for companyId, userId, or other scope values; the server supplies them.",
+    "Never invent UUIDs or raw database identifiers. If a tool accepts a human-readable ref, use that. If you need an exact target and do not already have one, call the relevant lookup tool first.",
     "Home tools execute immediately. Only call a tool when its effect matches the user's request, and describe the actual result returned by the server.",
     "Secret values are write-only/redacted. You may list secret metadata, but never reveal decrypted secret material.",
     "Keep answers practical, concise, and grounded in the company context provided here.",
@@ -168,6 +170,37 @@ function serializeToolResultPayload(input: {
     summary: input.content,
     data: input.data,
   }).slice(0, HOME_TOOL_RESULT_CHAR_LIMIT);
+}
+
+function isHomeToolFailureData(value: unknown): value is HomeChatToolFailureData {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.code === "string";
+}
+
+function normalizeToolFailure(error: unknown): {
+  message: string;
+  data?: HomeChatToolFailureData;
+} {
+  if (error instanceof HttpError) {
+    const details = isHomeToolFailureData(error.details) ? error.details : undefined;
+    return {
+      message: error.message,
+      data: details,
+    };
+  }
+
+  const message = error instanceof Error ? error.message : "Home tool failed";
+  if (message.includes("invalid input syntax for type uuid")) {
+    return {
+      message: "The provided reference did not match a valid item in this company.",
+      data: {
+        code: "invalid_reference",
+        hint: "Use a company-local name/ref or call the relevant lookup tool first.",
+      },
+    };
+  }
+  return { message };
 }
 
 function sanitizeToolName(value: unknown): string {
@@ -261,24 +294,26 @@ async function runSelectedHomeTool(input: {
       }),
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Home tool failed";
+    const failure = normalizeToolFailure(error);
     await input.onEvent({
       type: "tool_call_failed",
       toolCallId: input.toolCall.providerCallId,
       name: descriptor.name,
       displayName: descriptor.displayName,
-      error: message,
+      error: failure.message,
+      data: failure.data,
     });
     return {
       toolCallId: input.toolCall.providerCallId,
       name: descriptor.name,
       displayName: descriptor.displayName,
-      content: message,
+      content: failure.message,
       status: "failed" as const,
       output: serializeToolResultPayload({
         name: descriptor.name,
         status: "failed",
-        content: message,
+        content: failure.message,
+        data: failure.data,
       }),
     };
   }

@@ -89,12 +89,37 @@ export const homeChatAssistantDoneEventSchema = z.object({
 
 export const HOME_CHAT_TOOL_RISK_LEVELS = ["safe", "low", "risky"] as const;
 export const HOME_CHAT_TOOL_SOURCE_KINDS = ["internal", "integrations"] as const;
+export const HOME_CHAT_TOOL_FAILURE_CODES = [
+  "invalid_reference",
+  "not_found",
+  "ambiguous_reference",
+  "forbidden_company_scope",
+  "conflict",
+] as const;
 
 export const homeChatToolRiskLevelSchema = z.enum(HOME_CHAT_TOOL_RISK_LEVELS);
 export type HomeChatToolRiskLevel = z.infer<typeof homeChatToolRiskLevelSchema>;
 
 export const homeChatToolSourceKindSchema = z.enum(HOME_CHAT_TOOL_SOURCE_KINDS);
 export type HomeChatToolSourceKind = z.infer<typeof homeChatToolSourceKindSchema>;
+
+export const homeChatToolFailureCodeSchema = z.enum(HOME_CHAT_TOOL_FAILURE_CODES);
+export type HomeChatToolFailureCode = z.infer<typeof homeChatToolFailureCodeSchema>;
+
+export const homeChatToolFailureCandidateSchema = z.object({
+  id: z.string().min(1).optional(),
+  label: z.string().min(1),
+  ref: z.string().min(1).optional(),
+});
+
+export const homeChatToolFailureDataSchema = z.object({
+  code: homeChatToolFailureCodeSchema,
+  entityType: z.string().min(1).optional(),
+  reference: z.string().min(1).optional(),
+  candidates: z.array(homeChatToolFailureCandidateSchema).optional(),
+  hint: z.string().min(1).optional(),
+});
+export type HomeChatToolFailureData = z.infer<typeof homeChatToolFailureDataSchema>;
 
 export const homeChatToolCallRequestedEventSchema = z.object({
   type: z.literal("tool_call_requested"),
@@ -127,6 +152,7 @@ export const homeChatToolCallFailedEventSchema = z.object({
   name: z.string().min(1),
   displayName: z.string().min(1),
   error: z.string().min(1),
+  data: homeChatToolFailureDataSchema.optional(),
 });
 
 export const homeChatErrorEventSchema = z.object({

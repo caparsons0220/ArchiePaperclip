@@ -95,6 +95,18 @@ describe("home tool catalog", () => {
     expect(selection.limit).toBe(12);
     expect(selection.tools.length).toBeLessThanOrEqual(12);
     expect(selection.tools.map((tool) => tool.name)).toContain("pause_agent");
+    expect(selection.tools.map((tool) => tool.name)).toContain("list_agents");
+  });
+
+  it("adds companion lookup tools for risky action turns", () => {
+    const dispatcher = createDispatcherWithoutDb();
+    const selection = dispatcher.selectTools("restart the preview runtime");
+    expect(selection.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "restart_preview_runtime",
+      "list_projects",
+      "list_execution_workspaces",
+      "get_active_preview",
+    ]));
   });
 
   it("widens the direct tool subset for capability questions", () => {
@@ -203,6 +215,94 @@ describeEmbeddedPostgres("home tool execution authz", () => {
     expect(updatedCompany?.budgetMonthlyCents).toBe(1000);
   });
 
+  it("resolves agent refs for pause_agent, including legacy non-UUID agentId input", async () => {
+    const company = await insertCompany(db, "Agent Ref Company");
+    const dispatcher = createHomeToolDispatcher(db);
+    const agent = await db
+      .insert(agents)
+      .values({
+        companyId: company.id,
+        name: "CEO",
+        role: "general",
+        title: "Chief Executive Officer",
+        model: "test-model",
+        status: "idle",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const byRef = await dispatcher.executeTool({
+      ctx: createCtx(company.id),
+      name: "pause_agent",
+      parameters: { agentRef: "CEO" },
+    });
+    expect(byRef.status).toBe("completed");
+    expect(byRef.content).toContain("Paused CEO");
+
+    await db.update(agents).set({ status: "idle", pauseReason: null, pausedAt: null }).where(eq(agents.id, agent.id));
+
+    const byLegacyId = await dispatcher.executeTool({
+      ctx: createCtx(company.id),
+      name: "pause_agent",
+      parameters: { agentId: "CEO" },
+    });
+    expect(byLegacyId.status).toBe("completed");
+    expect(byLegacyId.content).toContain("Paused CEO");
+  });
+
+  it("returns a structured ambiguity error for human agent refs", async () => {
+    const company = await insertCompany(db, "Ambiguous Agent Company");
+    const dispatcher = createHomeToolDispatcher(db);
+    await db.insert(agents).values([
+      {
+        companyId: company.id,
+        name: "CEO",
+        role: "general",
+        title: "Chief Executive Officer",
+        model: "test-model",
+        status: "idle",
+      },
+      {
+        companyId: company.id,
+        name: "Ceo",
+        role: "general",
+        title: "Executive Lead",
+        model: "test-model",
+        status: "idle",
+      },
+    ]);
+
+    await expect(dispatcher.executeTool({
+      ctx: createCtx(company.id),
+      name: "pause_agent",
+      parameters: { agentRef: "CEO" },
+    })).rejects.toMatchObject({
+      status: 409,
+      message: 'Agent reference "CEO" is ambiguous in this company.',
+      details: expect.objectContaining({
+        code: "ambiguous_reference",
+        entityType: "agent",
+        reference: "CEO",
+      }),
+    });
+  });
+
+  it("resolves project refs for project budget updates", async () => {
+    const company = await insertCompany(db, "Project Budget Company");
+    const projectsSvc = projectService(db);
+    const dispatcher = createHomeToolDispatcher(db);
+    const project = await projectsSvc.create(company.id, { name: "Onboarding" });
+
+    const result = await dispatcher.executeTool({
+      ctx: createCtx(company.id),
+      name: "update_budget",
+      parameters: { scope: "project", projectRef: project.urlKey, monthlyCents: 2500 },
+    });
+
+    expect(result.status).toBe("completed");
+    expect(result.content).toContain("Updated project budget");
+  });
+
   it("restarts a project preview runtime through the real workspace runtime path", async () => {
     const company = await insertCompany(db, "Runtime Company");
     const projects = projectService(db);
@@ -250,7 +350,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
       const result = await dispatcher.executeTool({
         ctx: createCtx(company.id),
         name: "restart_preview_runtime",
-        parameters: { projectId: project.id },
+        parameters: { projectRef: project.urlKey },
       });
 
       expect(result.status).toBe("completed");
