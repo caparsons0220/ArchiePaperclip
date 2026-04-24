@@ -63,25 +63,7 @@ export interface HomeChatAssistantDoneEvent {
 
 export type HomeChatToolRiskLevel = "safe" | "low" | "risky";
 
-export type HomeChatToolSourceKind = "internal" | "plugin" | "mcp";
-
-export interface HomeChatToolInventoryItem {
-  name: string;
-  displayName: string;
-  description: string;
-  category: string;
-  riskLevel: HomeChatToolRiskLevel;
-  inputSchema: Record<string, unknown>;
-  sourceKind: HomeChatToolSourceKind;
-  sourceId: string;
-}
-
-export interface HomeChatToolSearchResultData {
-  query: string;
-  category: string | null;
-  results: HomeChatToolInventoryItem[];
-  fallbackInventory?: HomeChatToolInventoryItem[];
-}
+export type HomeChatToolSourceKind = "internal" | "integrations";
 
 export interface HomeChatToolCallRequestedEvent {
   type: "tool_call_requested";

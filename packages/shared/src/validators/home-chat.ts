@@ -88,33 +88,13 @@ export const homeChatAssistantDoneEventSchema = z.object({
 });
 
 export const HOME_CHAT_TOOL_RISK_LEVELS = ["safe", "low", "risky"] as const;
-export const HOME_CHAT_TOOL_SOURCE_KINDS = ["internal", "plugin", "mcp"] as const;
+export const HOME_CHAT_TOOL_SOURCE_KINDS = ["internal", "integrations"] as const;
 
 export const homeChatToolRiskLevelSchema = z.enum(HOME_CHAT_TOOL_RISK_LEVELS);
 export type HomeChatToolRiskLevel = z.infer<typeof homeChatToolRiskLevelSchema>;
 
 export const homeChatToolSourceKindSchema = z.enum(HOME_CHAT_TOOL_SOURCE_KINDS);
 export type HomeChatToolSourceKind = z.infer<typeof homeChatToolSourceKindSchema>;
-
-export const homeChatToolInventoryItemSchema = z.object({
-  name: z.string().min(1),
-  displayName: z.string().min(1),
-  description: z.string().min(1),
-  category: z.string().min(1),
-  riskLevel: homeChatToolRiskLevelSchema,
-  inputSchema: z.record(z.unknown()),
-  sourceKind: homeChatToolSourceKindSchema,
-  sourceId: z.string().min(1),
-});
-export type HomeChatToolInventoryItem = z.infer<typeof homeChatToolInventoryItemSchema>;
-
-export const homeChatToolSearchResultDataSchema = z.object({
-  query: z.string(),
-  category: z.string().min(1).nullable(),
-  results: z.array(homeChatToolInventoryItemSchema),
-  fallbackInventory: z.array(homeChatToolInventoryItemSchema).optional(),
-});
-export type HomeChatToolSearchResultData = z.infer<typeof homeChatToolSearchResultDataSchema>;
 
 export const homeChatToolCallRequestedEventSchema = z.object({
   type: z.literal("tool_call_requested"),

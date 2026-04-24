@@ -9,7 +9,6 @@ import {
   type CreateHomeChatThread,
   type HomeChatMessage,
   type HomeChatModel,
-  type HomeChatToolSearchResultData,
   type HomeChatProvider,
   type HomeChatStreamEvent,
   type HomeChatThread,
@@ -34,9 +33,16 @@ const HOME_CHAT_MODELS: HomeChatModel[] = [
 const HOME_CHAT_MODEL_MAP = new Map(HOME_CHAT_MODELS.map((model) => [model.id, model]));
 const DEFAULT_HOME_CHAT_MODEL_ID = HOME_CHAT_MODELS.find((model) => model.isDefault)?.id ?? "gpt-5.4";
 const ANTHROPIC_MAX_TOKENS = 4_096;
-const HOME_TOOL_LOOP_LIMIT = 2;
+const HOME_TOOL_ROUND_LIMIT = 6;
+const HOME_TOOL_CALL_LIMIT = 12;
+const HOME_TOOL_RESULT_CHAR_LIMIT = 12_000;
 
 type HomeChatThreadRow = typeof homeChatThreads.$inferSelect;
+type OpenAIConversationItem = Record<string, unknown>;
+type AnthropicConversationMessage = {
+  role: "user" | "assistant";
+  content: string | Array<Record<string, unknown>>;
+};
 
 function parseMessages(value: unknown): HomeChatMessage[] {
   const parsed = homeChatMessageSchema.array().safeParse(value ?? []);
@@ -106,10 +112,9 @@ function buildSystemPrompt(input: {
     `Current company: ${input.companyName}`,
     descriptionLine,
     "Help with planning, prioritization, roadmap pressure-testing, launch briefs, board updates, and company operations for this company.",
-    "You can use company-scoped Home tools to inspect or change the user's workspace experience.",
-    "If the user asks what Archie can do or what tools exist, call list_home_tools first.",
-    "For a specific task, search_home_tools by intent and then call a curated tool by name.",
-    "If search_home_tools returns no exact matches or feels uncertain, call list_home_tools before answering.",
+    "You can use company-scoped Home tools to inspect or change this company's state.",
+    "You receive only a bounded subset of relevant Home tools on each turn. Use a tool directly when it clearly matches the user's request.",
+    "If the user asks what Archie can do, summarize only the tools exposed on this turn and do not invent hidden capabilities.",
     "Never invent URLs or call raw endpoints. Never request or expose platform/server/admin controls. Never ask the user for companyId, userId, or other scope values; the server supplies them.",
     "Home tools execute immediately. Only call a tool when its effect matches the user's request, and describe the actual result returned by the server.",
     "Secret values are write-only/redacted. You may list secret metadata, but never reveal decrypted secret material.",
@@ -117,77 +122,6 @@ function buildSystemPrompt(input: {
     "Do not claim you executed actions, changed state, used tools, read files, or contacted external systems unless that actually happened in this request.",
     "If information is missing, say what assumption you are making or what needs to be clarified next.",
   ].join("\n");
-}
-
-function homeToolProviderDefinitions(provider: HomeChatProvider): unknown[] {
-  const listInputSchema = {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      category: { type: "string", description: "Optional Home tool category." },
-      limit: { type: "number", description: "Maximum tools to return." },
-    },
-  };
-  const searchInputSchema = {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      query: { type: "string", description: "Natural-language intent to find matching Home tools." },
-      category: { type: "string", description: "Optional Home tool category." },
-      limit: { type: "number", description: "Maximum tools to return." },
-    },
-    required: ["query"],
-  };
-  const callInputSchema = {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      name: { type: "string", description: "Curated Home tool name returned by list_home_tools or search_home_tools." },
-      input: { type: "object", description: "Input object for the selected Home tool." },
-    },
-    required: ["name", "input"],
-  };
-
-  if (provider === "anthropic") {
-    return [
-      {
-        name: "list_home_tools",
-        description: "List the currently available company-scoped Home tools.",
-        input_schema: listInputSchema,
-      },
-      {
-        name: "search_home_tools",
-        description: "Search the curated company-scoped Home tool catalog by user intent.",
-        input_schema: searchInputSchema,
-      },
-      {
-        name: "call_home_tool",
-        description: "Execute a curated company-scoped Home tool. The server injects scope and permission context.",
-        input_schema: callInputSchema,
-      },
-    ];
-  }
-
-  return [
-    {
-      type: "function",
-      name: "list_home_tools",
-      description: "List the currently available company-scoped Home tools.",
-      parameters: listInputSchema,
-    },
-    {
-      type: "function",
-      name: "search_home_tools",
-      description: "Search the curated company-scoped Home tool catalog by user intent.",
-      parameters: searchInputSchema,
-    },
-    {
-      type: "function",
-      name: "call_home_tool",
-      description: "Execute a curated company-scoped Home tool. The server injects scope and permission context.",
-      parameters: callInputSchema,
-    },
-  ];
 }
 
 function parseJsonRecord(value: unknown): Record<string, unknown> {
@@ -210,180 +144,124 @@ function stringifyToolResult(value: unknown): string {
   }, 2);
 }
 
-function buildToolResultMessage(results: Array<{ name: string; content: string; data?: unknown; status?: "completed" | "failed" }>) {
-  return [
-    "Company tool results from this request:",
-    ...results.map((result) => [
-      `Tool: ${result.name}`,
-      `Status: ${result.status ?? "completed"}`,
-      `Summary: ${result.content}`,
-      result.data === undefined ? null : `Data: ${stringifyToolResult(result.data).slice(0, 12000)}`,
-    ].filter(Boolean).join("\n")),
-    "Use these results to answer the user. Do not claim anything beyond what these tool results show.",
-  ].join("\n\n");
+function appendAssistantContent(current: string, next: string) {
+  if (!current.trim()) return next.trim();
+  if (!next.trim()) return current.trim();
+  return `${current.trimEnd()}\n${next.trimStart()}`.trim();
 }
 
-function createProviderToolDescriptor(input: {
+function serializeToolResultPayload(input: {
   name: string;
-  displayName: string;
-  description: string;
-}): HomeToolDescriptor {
-  return {
-    name: input.name,
-    displayName: input.displayName,
-    description: input.description,
-    category: "workspace",
-    riskLevel: "safe",
-    inputSchema: {},
-    keywords: [],
-  };
+  status: "completed" | "failed";
+  content: string;
+  data?: unknown;
+}) {
+  return stringifyToolResult({
+    tool: input.name,
+    status: input.status,
+    summary: input.content,
+    data: input.data,
+  }).slice(0, HOME_TOOL_RESULT_CHAR_LIMIT);
 }
 
-async function runHomeProviderTool(input: {
-  db: Db;
+function mapMessagesToOpenAIInput(messages: HomeChatMessage[]): OpenAIConversationItem[] {
+  return messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }));
+}
+
+function mapMessagesToAnthropicInput(messages: HomeChatMessage[]): AnthropicConversationMessage[] {
+  return messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }));
+}
+
+function buildProviderToolDefinitions(provider: HomeChatProvider, tools: HomeToolDescriptor[]): unknown[] {
+  if (provider === "anthropic") {
+    return tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.inputSchema,
+    }));
+  }
+
+  return tools.map((tool) => ({
+    type: "function",
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.inputSchema,
+  }));
+}
+
+function resolveResponseId(event: Record<string, unknown>, currentResponseId: string | null) {
+  if (typeof event.response_id === "string" && event.response_id.trim().length > 0) {
+    return event.response_id;
+  }
+  const response = typeof event.response === "object" && event.response !== null
+    ? event.response as Record<string, unknown>
+    : null;
+  if (response && typeof response.id === "string" && response.id.trim().length > 0) {
+    return response.id;
+  }
+  return currentResponseId;
+}
+
+async function runSelectedHomeTool(input: {
+  dispatcher: ReturnType<typeof createHomeToolDispatcher>;
   ctx: HomeToolContext;
+  allowedTools: Map<string, HomeToolDescriptor>;
+  toolCallId: string;
   name: string;
   arguments: Record<string, unknown>;
   onEvent: (event: HomeChatStreamEvent) => Promise<void> | void;
 }) {
-  const dispatcher = createHomeToolDispatcher(input.db);
-  const toolCallId = randomUUID();
-
-  if (input.name === "list_home_tools" || input.name === "search_home_tools") {
-    const category = typeof input.arguments.category === "string" ? input.arguments.category : null;
-    const limit = typeof input.arguments.limit === "number" ? input.arguments.limit : 8;
-    const query = typeof input.arguments.query === "string" ? input.arguments.query : "";
-    const descriptor = input.name === "list_home_tools"
-      ? createProviderToolDescriptor({
-        name: "list_home_tools",
-        displayName: "List Home tools",
-        description: "List the currently available company-scoped Home tools.",
-      })
-      : createProviderToolDescriptor({
-        name: "search_home_tools",
-        displayName: "Search Home tools",
-        description: "Search the curated company-scoped Home tool catalog.",
-      });
-    await input.onEvent({
-      type: "tool_call_requested",
-      toolCallId,
-      name: descriptor.name,
-      displayName: descriptor.displayName,
-      input: {
-        ...(input.name === "search_home_tools" ? { query } : {}),
-        ...(category ? { category } : {}),
-        limit,
-      },
-      riskLevel: descriptor.riskLevel,
-    });
-    await input.onEvent({
-      type: "tool_call_started",
-      toolCallId,
-      name: descriptor.name,
-      displayName: descriptor.displayName,
-    });
-    try {
-      const data = input.name === "list_home_tools"
-        ? dispatcher.listInventory({ category, limit })
-        : (() => {
-          const results = dispatcher.searchInventory(query, category, limit);
-          const payload: HomeChatToolSearchResultData = {
-            query,
-            category,
-            results,
-          };
-          if (results.length === 0) {
-            payload.fallbackInventory = dispatcher.listInventory({ category, limit });
-          }
-          return payload;
-        })();
-      const content = input.name === "list_home_tools"
-        ? (Array.isArray(data) && data.length > 0
-          ? `Listed ${data.length} available Home tools.`
-          : "No Home tools are currently available.")
-        : ((data as HomeChatToolSearchResultData).results.length > 0
-          ? `Found ${(data as HomeChatToolSearchResultData).results.length} matching Home tools.`
-          : ((data as HomeChatToolSearchResultData).fallbackInventory?.length ?? 0) > 0
-            ? "No exact matches; here are available Home tools."
-            : "No Home tools are currently available.");
-      await input.onEvent({
-        type: "tool_call_result",
-        toolCallId,
-        name: descriptor.name,
-        displayName: descriptor.displayName,
-        content,
-        data,
-      });
-      return {
-        name: descriptor.name,
-        content,
-        data,
-        status: "completed" as const,
-      };
-    } catch (error) {
-      const message = error instanceof Error
-        ? error.message
-        : input.name === "list_home_tools"
-          ? "Home tool inventory failed"
-          : "Home tool search failed";
-      await input.onEvent({
-        type: "tool_call_failed",
-        toolCallId,
-        name: descriptor.name,
-        displayName: descriptor.displayName,
-        error: message,
-      });
-      return {
-        name: descriptor.name,
-        content: message,
-        status: "failed" as const,
-      };
-    }
-  }
-
-  if (input.name !== "call_home_tool") {
-    throw badRequest(`Unknown Home provider tool: ${input.name}`);
-  }
-
-  const toolName = typeof input.arguments.name === "string" ? input.arguments.name : "";
-  const parameters = parseJsonRecord(input.arguments.input);
-  const descriptor = dispatcher.getTool(toolName);
+  const descriptor = input.allowedTools.get(input.name);
   if (!descriptor) {
-    const message = `Unknown Home tool: ${toolName}`;
+    const message = `Home tool is not available in this turn: ${input.name}`;
     await input.onEvent({
       type: "tool_call_failed",
-      toolCallId,
-      name: toolName || "call_home_tool",
-      displayName: toolName || "Home tool",
+      toolCallId: input.toolCallId,
+      name: input.name,
+      displayName: input.name,
       error: message,
     });
     return {
-      name: toolName || "call_home_tool",
+      toolCallId: input.toolCallId,
+      name: input.name,
+      displayName: input.name,
       content: message,
+      data: undefined,
       status: "failed" as const,
+      output: serializeToolResultPayload({
+        name: input.name,
+        status: "failed",
+        content: message,
+      }),
     };
   }
 
   await input.onEvent({
     type: "tool_call_requested",
-    toolCallId,
+    toolCallId: input.toolCallId,
     name: descriptor.name,
     displayName: descriptor.displayName,
-    input: parameters,
+    input: input.arguments,
     riskLevel: descriptor.riskLevel,
   });
   await input.onEvent({
     type: "tool_call_started",
-    toolCallId,
+    toolCallId: input.toolCallId,
     name: descriptor.name,
     displayName: descriptor.displayName,
   });
   try {
-    const execution = await dispatcher.executeTool({
+    const execution = await input.dispatcher.executeTool({
       ctx: input.ctx,
-      name: toolName,
-      parameters,
-      toolCallId,
+      name: descriptor.name,
+      parameters: input.arguments,
+      toolCallId: input.toolCallId,
     });
     await input.onEvent({
       type: "tool_call_result",
@@ -394,24 +272,39 @@ async function runHomeProviderTool(input: {
       data: execution.data,
     });
     return {
+      toolCallId: execution.toolCallId,
       name: execution.descriptor.name,
+      displayName: execution.descriptor.displayName,
       content: execution.content,
       data: execution.data,
       status: "completed" as const,
+      output: serializeToolResultPayload({
+        name: execution.descriptor.name,
+        status: "completed",
+        content: execution.content,
+        data: execution.data,
+      }),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Home tool failed";
     await input.onEvent({
       type: "tool_call_failed",
-      toolCallId,
+      toolCallId: input.toolCallId,
       name: descriptor.name,
       displayName: descriptor.displayName,
       error: message,
     });
     return {
+      toolCallId: input.toolCallId,
       name: descriptor.name,
+      displayName: descriptor.displayName,
       content: message,
       status: "failed" as const,
+      output: serializeToolResultPayload({
+        name: descriptor.name,
+        status: "failed",
+        content: message,
+      }),
     };
   }
 }
@@ -434,32 +327,39 @@ function ensureProviderApiKey(provider: HomeChatProvider) {
 
 async function streamOpenAIResponse(input: {
   apiKey: string;
-  db: Db;
+  dispatcher: ReturnType<typeof createHomeToolDispatcher>;
   ctx: HomeToolContext;
   model: HomeChatModel;
   systemPrompt: string;
-  messages: HomeChatMessage[];
-  allowTools?: boolean;
+  toolQuery: string;
+  conversationInput: OpenAIConversationItem[];
+  round?: number;
+  totalToolCalls?: number;
+  previousResponseId?: string | null;
   onDelta: (delta: string) => Promise<void> | void;
   onEvent: (event: HomeChatStreamEvent) => Promise<void> | void;
 }): Promise<string> {
   const client = new OpenAI({ apiKey: input.apiKey });
+  const selection = input.dispatcher.selectTools(input.toolQuery);
+  const toolDefinitions = buildProviderToolDefinitions("openai", selection.tools);
+  const allowedTools = new Map(selection.tools.map((tool) => [tool.name, tool]));
   const stream = await client.responses.create({
     model: input.model.id,
     instructions: input.systemPrompt,
-    input: input.messages.map((message) => ({
-      role: message.role,
-      content: message.content,
-    })),
-    tools: input.allowTools === false ? undefined : homeToolProviderDefinitions("openai") as any,
+    input: input.conversationInput,
+    previous_response_id: input.previousResponseId ?? undefined,
+    tools: toolDefinitions.length > 0 ? toolDefinitions as any : undefined,
+    parallel_tool_calls: false,
     store: false,
     stream: true,
   } as any) as unknown as AsyncIterable<any>;
 
   let content = "";
-  const toolCalls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+  let responseId: string | null = input.previousResponseId ?? null;
+  const toolCalls = new Map<string, { callId: string; name: string; arguments: Record<string, unknown> }>();
   for await (const event of stream) {
     const current = event as any;
+    responseId = resolveResponseId(current, responseId);
     if (current.type === "response.output_text.delta" && typeof current.delta === "string" && current.delta.length > 0) {
       content += current.delta;
       await input.onDelta(current.delta);
@@ -467,9 +367,21 @@ async function streamOpenAIResponse(input: {
     }
 
     if (current.type === "response.output_item.done" && current.item?.type === "function_call") {
-      toolCalls.push({
+      const callId = String(current.item.call_id ?? current.item.id ?? `openai-tool-${toolCalls.size}`);
+      toolCalls.set(callId, {
+        callId,
         name: String(current.item.name ?? ""),
         arguments: parseJsonRecord(current.item.arguments),
+      });
+      continue;
+    }
+
+    if (current.type === "response.function_call_arguments.done") {
+      const callId = String(current.call_id ?? current.item_id ?? `openai-tool-${toolCalls.size}`);
+      toolCalls.set(callId, {
+        callId,
+        name: String(current.name ?? ""),
+        arguments: parseJsonRecord(current.arguments),
       });
       continue;
     }
@@ -479,67 +391,77 @@ async function streamOpenAIResponse(input: {
     }
   }
 
-  if (toolCalls.length > 0 && input.allowTools !== false) {
+  const round = input.round ?? 0;
+  const totalToolCalls = input.totalToolCalls ?? 0;
+  const completedToolCalls = Array.from(toolCalls.values());
+  if (
+    completedToolCalls.length > 0
+    && round < HOME_TOOL_ROUND_LIMIT
+    && totalToolCalls < HOME_TOOL_CALL_LIMIT
+  ) {
+    const remainingToolCalls = HOME_TOOL_CALL_LIMIT - totalToolCalls;
     const toolResults = [];
-    for (const toolCall of toolCalls.slice(0, HOME_TOOL_LOOP_LIMIT)) {
-      toolResults.push(await runHomeProviderTool({
-        db: input.db,
+    for (const toolCall of completedToolCalls.slice(0, remainingToolCalls)) {
+      toolResults.push(await runSelectedHomeTool({
+        dispatcher: input.dispatcher,
         ctx: input.ctx,
+        allowedTools,
+        toolCallId: toolCall.callId,
         name: toolCall.name,
         arguments: toolCall.arguments,
         onEvent: input.onEvent,
       }));
     }
 
-    const followupMessages: HomeChatMessage[] = [
-      ...input.messages,
-      {
-        id: randomUUID(),
-        role: "user",
-        content: buildToolResultMessage(toolResults),
-        modelId: input.model.id,
-        provider: input.model.provider,
-        createdAt: new Date().toISOString(),
-      },
-    ];
+    const followupInput = toolResults.map((result) => ({
+      type: "function_call_output",
+      call_id: result.toolCallId,
+      output: result.output,
+    }));
     const followup: string = await streamOpenAIResponse({
       ...input,
-      messages: followupMessages,
-      allowTools: false,
+      conversationInput: responseId
+        ? followupInput
+        : [...input.conversationInput, ...followupInput],
+      previousResponseId: responseId,
+      round: round + 1,
+      totalToolCalls: totalToolCalls + toolResults.length,
     });
-    return `${content}${followup}`.trim();
+    return appendAssistantContent(content, followup);
   }
 
-  return content;
+  return content.trim();
 }
 
 async function streamAnthropicResponse(input: {
   apiKey: string;
-  db: Db;
+  dispatcher: ReturnType<typeof createHomeToolDispatcher>;
   ctx: HomeToolContext;
   model: HomeChatModel;
   systemPrompt: string;
-  messages: HomeChatMessage[];
-  allowTools?: boolean;
+  toolQuery: string;
+  messages: AnthropicConversationMessage[];
+  round?: number;
+  totalToolCalls?: number;
   onDelta: (delta: string) => Promise<void> | void;
   onEvent: (event: HomeChatStreamEvent) => Promise<void> | void;
 }): Promise<string> {
   const client = new Anthropic({ apiKey: input.apiKey });
+  const selection = input.dispatcher.selectTools(input.toolQuery);
+  const toolDefinitions = buildProviderToolDefinitions("anthropic", selection.tools);
+  const allowedTools = new Map(selection.tools.map((tool) => [tool.name, tool]));
   const stream = await client.messages.create({
     model: input.model.id,
     system: input.systemPrompt,
     max_tokens: ANTHROPIC_MAX_TOKENS,
-    messages: input.messages.map((message) => ({
-      role: message.role,
-      content: message.content,
-    })),
-    tools: input.allowTools === false ? undefined : homeToolProviderDefinitions("anthropic") as any,
+    messages: input.messages,
+    tools: toolDefinitions.length > 0 ? toolDefinitions as any : undefined,
     stream: true,
   } as any) as unknown as AsyncIterable<any>;
 
   let content = "";
-  const toolBlocks = new Map<number, { name: string; inputJson: string }>();
-  const completedToolCalls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+  const toolBlocks = new Map<number, { id: string; name: string; inputJson: string }>();
+  const completedToolCalls: Array<{ toolCallId: string; name: string; arguments: Record<string, unknown> }> = [];
   for await (const event of stream) {
     const current = event as any;
     if (
@@ -547,6 +469,7 @@ async function streamAnthropicResponse(input: {
       && current.content_block?.type === "tool_use"
     ) {
       toolBlocks.set(Number(current.index ?? 0), {
+        id: String(current.content_block.id ?? `anthropic-tool-${toolBlocks.size}`),
         name: String(current.content_block.name ?? ""),
         inputJson: "",
       });
@@ -568,6 +491,7 @@ async function streamAnthropicResponse(input: {
       const block = toolBlocks.get(Number(current.index ?? 0));
       if (block) {
         completedToolCalls.push({
+          toolCallId: block.id,
           name: block.name,
           arguments: parseJsonRecord(block.inputJson),
         });
@@ -588,38 +512,69 @@ async function streamAnthropicResponse(input: {
     }
   }
 
-  if (completedToolCalls.length > 0 && input.allowTools !== false) {
+  const round = input.round ?? 0;
+  const totalToolCalls = input.totalToolCalls ?? 0;
+  if (
+    completedToolCalls.length > 0
+    && round < HOME_TOOL_ROUND_LIMIT
+    && totalToolCalls < HOME_TOOL_CALL_LIMIT
+  ) {
+    const remainingToolCalls = HOME_TOOL_CALL_LIMIT - totalToolCalls;
     const toolResults = [];
-    for (const toolCall of completedToolCalls.slice(0, HOME_TOOL_LOOP_LIMIT)) {
-      toolResults.push(await runHomeProviderTool({
-        db: input.db,
+    for (const toolCall of completedToolCalls.slice(0, remainingToolCalls)) {
+      toolResults.push(await runSelectedHomeTool({
+        dispatcher: input.dispatcher,
         ctx: input.ctx,
+        allowedTools,
+        toolCallId: toolCall.toolCallId,
         name: toolCall.name,
         arguments: toolCall.arguments,
         onEvent: input.onEvent,
       }));
     }
 
-    const followupMessages: HomeChatMessage[] = [
+    const assistantContentBlocks: Array<Record<string, unknown>> = [];
+    if (content.trim().length > 0) {
+      assistantContentBlocks.push({
+        type: "text",
+        text: content,
+      });
+    }
+    for (const toolCall of completedToolCalls.slice(0, remainingToolCalls)) {
+      assistantContentBlocks.push({
+        type: "tool_use",
+        id: toolCall.toolCallId,
+        name: toolCall.name,
+        input: toolCall.arguments,
+      });
+    }
+
+    const followupMessages: AnthropicConversationMessage[] = [
       ...input.messages,
       {
-        id: randomUUID(),
+        role: "assistant",
+        content: assistantContentBlocks,
+      },
+      {
         role: "user",
-        content: buildToolResultMessage(toolResults),
-        modelId: input.model.id,
-        provider: input.model.provider,
-        createdAt: new Date().toISOString(),
+        content: toolResults.map((result) => ({
+          type: "tool_result",
+          tool_use_id: result.toolCallId,
+          content: result.output,
+          is_error: result.status === "failed" ? true : undefined,
+        })),
       },
     ];
     const followup: string = await streamAnthropicResponse({
       ...input,
       messages: followupMessages,
-      allowTools: false,
+      round: round + 1,
+      totalToolCalls: totalToolCalls + toolResults.length,
     });
-    return `${content}${followup}`.trim();
+    return appendAssistantContent(content, followup);
   }
 
-  return content;
+  return content.trim();
 }
 
 export function homeChatService(db: Db) {
@@ -781,14 +736,15 @@ export function homeChatService(db: Db) {
         ownerUserId: input.ownerUserId,
         threadId: input.threadId,
       };
+      const dispatcher = createHomeToolDispatcher(db);
       const apiKey = ensureProviderApiKey(model.provider);
       const streamInput = {
         apiKey,
-        db,
+        dispatcher,
         ctx,
         model,
         systemPrompt,
-        messages: persistedMessages,
+        toolQuery: trimmedContent,
         onDelta: async (delta: string) => {
           await input.onEvent({
             type: "assistant_delta",
@@ -800,8 +756,14 @@ export function homeChatService(db: Db) {
       };
 
       const assistantContent = model.provider === "openai"
-        ? await streamOpenAIResponse(streamInput)
-        : await streamAnthropicResponse(streamInput);
+        ? await streamOpenAIResponse({
+          ...streamInput,
+          conversationInput: mapMessagesToOpenAIInput(persistedMessages),
+        })
+        : await streamAnthropicResponse({
+          ...streamInput,
+          messages: mapMessagesToAnthropicInput(persistedMessages),
+        });
 
       if (assistantContent.trim().length === 0) {
         throw new Error("Model returned an empty response");

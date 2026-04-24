@@ -57,6 +57,18 @@ describe("home tool catalog", () => {
     });
   });
 
+  it("exposes stable internal registry keys for direct tool dispatch", () => {
+    const dispatcher = createDispatcherWithoutDb();
+    expect(dispatcher.getTool("update_budget")).toMatchObject({
+      registryKey: "internal.update_budget",
+      name: "update_budget",
+    });
+    expect(dispatcher.getToolByRegistryKey("internal.pause_agent")).toMatchObject({
+      registryKey: "internal.pause_agent",
+      name: "pause_agent",
+    });
+  });
+
   it.each([
     ["create agenda item", "create_issue"],
     ["pause an agent", "pause_agent"],
@@ -74,6 +86,24 @@ describe("home tool catalog", () => {
     const dispatcher = createDispatcherWithoutDb();
     expect(dispatcher.searchInventory("pause an agent", null, 8).map((tool) => tool.name))
       .toEqual(dispatcher.searchTools("pause an agent", null, 8).map((tool) => tool.name));
+  });
+
+  it("selects a bounded direct tool subset for focused requests", () => {
+    const dispatcher = createDispatcherWithoutDb();
+    const selection = dispatcher.selectTools("pause an agent");
+    expect(selection.isCapabilityQuery).toBe(false);
+    expect(selection.limit).toBe(12);
+    expect(selection.tools.length).toBeLessThanOrEqual(12);
+    expect(selection.tools.map((tool) => tool.name)).toContain("pause_agent");
+  });
+
+  it("widens the direct tool subset for capability questions", () => {
+    const dispatcher = createDispatcherWithoutDb();
+    const selection = dispatcher.selectTools("What can Archie do?");
+    expect(selection.isCapabilityQuery).toBe(true);
+    expect(selection.limit).toBe(20);
+    expect(selection.tools.length).toBeGreaterThan(10);
+    expect(selection.tools.length).toBeLessThanOrEqual(20);
   });
 
   it("does not expose platform/server administration tools", () => {

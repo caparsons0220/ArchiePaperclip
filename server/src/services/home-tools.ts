@@ -9,7 +9,6 @@ import {
   workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
-  type HomeChatToolInventoryItem,
   type HomeChatToolSourceKind,
   type BudgetScopeType,
   type ProjectWorkspace,
@@ -66,6 +65,7 @@ export type HomeToolCategory =
   | "plugins";
 
 export interface HomeToolDescriptor {
+  registryKey: string;
   name: string;
   displayName: string;
   description: string;
@@ -73,6 +73,24 @@ export interface HomeToolDescriptor {
   riskLevel: HomeToolRiskLevel;
   inputSchema: Record<string, unknown>;
   keywords: string[];
+}
+
+export interface HomeToolInventoryItem {
+  name: string;
+  displayName: string;
+  description: string;
+  category: string;
+  riskLevel: HomeToolRiskLevel;
+  inputSchema: Record<string, unknown>;
+  sourceKind: HomeChatToolSourceKind;
+  sourceId: string;
+}
+
+export interface HomeToolSelection {
+  query: string;
+  isCapabilityQuery: boolean;
+  limit: number;
+  tools: HomeToolDescriptor[];
 }
 
 export interface HomeToolContext {
@@ -90,12 +108,12 @@ export interface HomeToolExecution {
   data?: unknown;
 }
 
-interface HomeToolDefinition extends HomeToolDescriptor {
+interface HomeToolDefinition extends Omit<HomeToolDescriptor, "registryKey"> {
   handler: (ctx: HomeToolContext, input: Record<string, unknown>) => Promise<{ content: string; data?: unknown }>;
 }
 
 interface HomeToolInventoryEntry {
-  item: HomeChatToolInventoryItem;
+  item: HomeToolInventoryItem;
   keywords: string[];
 }
 
@@ -106,6 +124,19 @@ interface HomeToolInventoryProvider {
 }
 
 const INTERNAL_HOME_TOOL_SOURCE_ID = "paperclip.home.internal";
+const DEFAULT_TOOL_SELECTION_LIMIT = 12;
+const CAPABILITY_TOOL_SELECTION_LIMIT = 20;
+const TOOL_SELECTION_LIMIT_MAX = 20;
+const TOOL_INVENTORY_LIMIT_MAX = 25;
+const CAPABILITY_QUERY_PATTERNS = [
+  /\bwhat can (you|archie) do\b/i,
+  /\bwhat tools\b/i,
+  /\bwhich tools\b/i,
+  /\bwhat actions\b/i,
+  /\bavailable tools\b/i,
+  /\bavailable actions\b/i,
+  /\bcapabilities\b/i,
+];
 
 function objectSchema(properties: Record<string, unknown>, required: string[] = []) {
   return {
@@ -1088,33 +1119,26 @@ export function createHomeToolDispatcher(db: Db) {
         return { content: `Updated ${scopeType} budget to ${amount} cents.`, data: summary };
       },
     },
-    {
-      name: "list_plugin_tools",
-      displayName: "List plugin tools",
-      description: "List already-installed plugin tools that may be available for the company.",
-      category: "plugins",
-      riskLevel: "safe",
-      keywords: ["plugins", "integrations", "external tools", "tool registry"],
-      inputSchema: objectSchema({}),
-      handler: async () => ({
-        content: "Installed plugin tool discovery is handled by the plugin tool dispatcher. Home AI will only execute plugin tools through company-scoped wrappers.",
-        data: { availableThroughPluginDispatcher: true },
-      }),
-    },
   ];
 
   const byName = new Map(definitions.map((tool) => [tool.name, tool]));
+  const byRegistryKey = new Map<string, HomeToolDefinition>(
+    definitions.map((tool) => [`internal.${tool.name}`, tool]),
+  );
 
   function publicDescriptor(tool: HomeToolDefinition): HomeToolDescriptor {
     const { handler: _handler, ...descriptor } = tool;
-    return descriptor;
+    return {
+      registryKey: `internal.${tool.name}`,
+      ...descriptor,
+    };
   }
 
   function createInventoryItem(
     sourceKind: HomeChatToolSourceKind,
     sourceId: string,
     tool: HomeToolDefinition,
-  ): HomeChatToolInventoryItem {
+  ): HomeToolInventoryItem {
     return {
       name: tool.name,
       displayName: tool.displayName,
@@ -1127,8 +1151,58 @@ export function createHomeToolDispatcher(db: Db) {
     };
   }
 
-  function boundedLimit(limit: number) {
-    return Math.max(1, Math.min(25, Math.floor(limit)));
+  function boundedInventoryLimit(limit: number) {
+    return Math.max(1, Math.min(TOOL_INVENTORY_LIMIT_MAX, Math.floor(limit)));
+  }
+
+  function boundedSelectionLimit(limit: number) {
+    return Math.max(1, Math.min(TOOL_SELECTION_LIMIT_MAX, Math.floor(limit)));
+  }
+
+  function isCapabilityQuery(query: string) {
+    return CAPABILITY_QUERY_PATTERNS.some((pattern) => pattern.test(query));
+  }
+
+  function scoreEntry(entry: HomeToolInventoryEntry, query: string) {
+    const normalized = query.toLowerCase().trim();
+    const terms = normalized.split(/\s+/).filter(Boolean);
+
+    if (terms.length === 0) return 0;
+
+    const name = entry.item.name.toLowerCase();
+    const displayName = entry.item.displayName.toLowerCase();
+    const description = entry.item.description.toLowerCase();
+    const category = entry.item.category.toLowerCase();
+    const keywords = entry.keywords.map((keyword) => keyword.toLowerCase());
+    const joinedKeywords = keywords.join(" ");
+
+    let score = 0;
+    for (const term of terms) {
+      if (name === term) score += 10;
+      if (displayName === term) score += 10;
+      if (name.includes(term)) score += 6;
+      if (displayName.includes(term)) score += 5;
+      if (keywords.some((keyword) => keyword === term)) score += 4;
+      if (joinedKeywords.includes(term)) score += 3;
+      if (category.includes(term)) score += 2;
+      if (description.includes(term)) score += 1;
+    }
+
+    if (name === normalized) score += 12;
+    if (displayName === normalized) score += 10;
+    if (name.includes(normalized) && normalized.length > 1) score += 6;
+    if (displayName.includes(normalized) && normalized.length > 1) score += 5;
+
+    return score;
+  }
+
+  function rankInventoryEntries(query: string, category?: string | null) {
+    return listInventoryEntries(category)
+      .map((entry) => ({ entry, score: scoreEntry(entry, query) }))
+      .sort((left, right) =>
+        right.score - left.score
+        || left.entry.item.riskLevel.localeCompare(right.entry.item.riskLevel)
+        || left.entry.item.name.localeCompare(right.entry.item.name));
   }
 
   const inventoryProviders: HomeToolInventoryProvider[] = [
@@ -1152,33 +1226,17 @@ export function createHomeToolDispatcher(db: Db) {
   function listInventory(options: {
     category?: string | null;
     limit?: number;
-  } = {}): HomeChatToolInventoryItem[] {
-    const limit = boundedLimit(options.limit ?? 25);
+  } = {}): HomeToolInventoryItem[] {
+    const limit = boundedInventoryLimit(options.limit ?? TOOL_INVENTORY_LIMIT_MAX);
     return listInventoryEntries(options.category)
       .slice(0, limit)
       .map((entry) => entry.item);
   }
 
-  function searchInventory(query: string, category?: string | null, limit = 8): HomeChatToolInventoryItem[] {
-    const normalized = query.toLowerCase().trim();
-    const terms = normalized.split(/\s+/).filter(Boolean);
-    return listInventoryEntries(category)
-      .map((entry) => {
-        const haystack = [
-          entry.item.name,
-          entry.item.displayName,
-          entry.item.description,
-          entry.item.category,
-          ...entry.keywords,
-        ].join(" ").toLowerCase();
-        const score = terms.length === 0
-          ? 1
-          : terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
-        return { entry, score };
-      })
+  function searchInventory(query: string, category?: string | null, limit = 8): HomeToolInventoryItem[] {
+    return rankInventoryEntries(query, category)
       .filter((entry) => entry.score > 0)
-      .sort((left, right) => right.score - left.score || left.entry.item.name.localeCompare(right.entry.item.name))
-      .slice(0, boundedLimit(limit))
+      .slice(0, boundedInventoryLimit(limit))
       .map((entry) => entry.entry.item);
   }
 
@@ -1191,11 +1249,63 @@ export function createHomeToolDispatcher(db: Db) {
     return tool ? publicDescriptor(tool) : null;
   }
 
+  function getToolByRegistryKey(registryKey: string): HomeToolDescriptor | null {
+    const tool = byRegistryKey.get(registryKey);
+    return tool ? publicDescriptor(tool) : null;
+  }
+
   function searchTools(query: string, category?: string | null, limit = 8): HomeToolDescriptor[] {
     return searchInventory(query, category, limit)
       .map((item) => byName.get(item.name))
       .filter((tool): tool is HomeToolDefinition => Boolean(tool))
       .map(publicDescriptor);
+  }
+
+  function selectTools(query: string, options: {
+    category?: string | null;
+    limit?: number;
+  } = {}): HomeToolSelection {
+    const normalized = query.trim();
+    const capabilityMode = isCapabilityQuery(normalized);
+    const limit = boundedSelectionLimit(options.limit ?? (
+      capabilityMode ? CAPABILITY_TOOL_SELECTION_LIMIT : DEFAULT_TOOL_SELECTION_LIMIT
+    ));
+
+    const ranked = normalized.length === 0
+      ? []
+      : rankInventoryEntries(normalized, options.category).filter((entry) => entry.score > 0);
+
+    const fallbackEntries = capabilityMode || ranked.length === 0
+      ? listInventoryEntries(options.category)
+      : [];
+
+    const selectedNames = new Set<string>();
+    const selectedTools: HomeToolDescriptor[] = [];
+
+    for (const rankedEntry of ranked) {
+      const tool = byName.get(rankedEntry.entry.item.name);
+      if (!tool || selectedNames.has(tool.name)) continue;
+      selectedNames.add(tool.name);
+      selectedTools.push(publicDescriptor(tool));
+      if (selectedTools.length >= limit) break;
+    }
+
+    if (selectedTools.length < limit) {
+      for (const fallbackEntry of fallbackEntries) {
+        const tool = byName.get(fallbackEntry.item.name);
+        if (!tool || selectedNames.has(tool.name)) continue;
+        selectedNames.add(tool.name);
+        selectedTools.push(publicDescriptor(tool));
+        if (selectedTools.length >= limit) break;
+      }
+    }
+
+    return {
+      query,
+      isCapabilityQuery: capabilityMode,
+      limit,
+      tools: selectedTools,
+    };
   }
 
   async function executeTool(input: {
@@ -1267,7 +1377,9 @@ export function createHomeToolDispatcher(db: Db) {
     searchInventory,
     listTools,
     getTool,
+    getToolByRegistryKey,
     searchTools,
+    selectTools,
     executeTool,
     searchCompanyState,
   };

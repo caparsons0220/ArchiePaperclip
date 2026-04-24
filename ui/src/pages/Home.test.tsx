@@ -437,15 +437,15 @@ describe("Home", () => {
     expect(container.textContent).not.toContain("Confirm");
   });
 
-  it("renders Home tool inventory results cleanly", async () => {
+  it("renders direct internal tool results cleanly", async () => {
     const emptyThread = createThread({
       id: "thread-inventory",
-      title: "Tool inventory",
+      title: "Project inventory",
       messages: [
         {
           id: "message-1",
           role: "user",
-          content: "What tools do you have?",
+          content: "List projects",
           modelId: "gpt-5.4",
           provider: "openai",
           createdAt: "2026-04-22T12:04:00.000Z",
@@ -466,28 +466,28 @@ describe("Home", () => {
           type: "session",
           threadId: "thread-inventory",
           selectedModelId: "gpt-5.4",
-          title: "Tool inventory",
+          title: "Project inventory",
         });
         await onEvent({
           type: "tool_call_requested",
           toolCallId: "tool-list-1",
-          name: "list_home_tools",
-          displayName: "List Home tools",
-          input: { limit: 4 },
+          name: "list_projects",
+          displayName: "List projects",
+          input: {},
           riskLevel: "safe",
         });
         await onEvent({
           type: "tool_call_started",
           toolCallId: "tool-list-1",
-          name: "list_home_tools",
-          displayName: "List Home tools",
+          name: "list_projects",
+          displayName: "List projects",
         });
         await onEvent({
           type: "tool_call_result",
           toolCallId: "tool-list-1",
-          name: "list_home_tools",
-          displayName: "List Home tools",
-          content: "Listed 4 available Home tools.",
+          name: "list_projects",
+          displayName: "List projects",
+          content: "Found 2 projects.",
           data: [
             { name: "list_projects", displayName: "List projects" },
             { name: "list_agents", displayName: "List agents" },
@@ -529,7 +529,7 @@ describe("Home", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("List Home tools");
-    expect(container.textContent).toContain("Listed 4 available Home tools.");
+    expect(container.textContent).toContain("List projects");
+    expect(container.textContent).toContain("Found 2 projects.");
   });
 });
