@@ -1,14 +1,19 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { and, desc, eq, ilike, isNotNull, ne, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
   companies,
   issues,
+  projectWorkspaces,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
   type BudgetScopeType,
+  type ProjectWorkspace,
+  type WorkspaceRuntimeDesiredState,
+  type WorkspaceRuntimeService,
+  type WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
 import { activityService } from "./activity.js";
 import { agentService } from "./agents.js";
@@ -18,10 +23,21 @@ import { companyService } from "./companies.js";
 import { companySkillService } from "./company-skills.js";
 import { costService } from "./costs.js";
 import { dashboardService } from "./dashboard.js";
-import { executionWorkspaceService } from "./execution-workspaces.js";
+import {
+  executionWorkspaceService,
+  mergeExecutionWorkspaceConfig,
+} from "./execution-workspaces.js";
 import { goalService } from "./goals.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
+import {
+  buildWorkspaceRuntimeDesiredStatePatch,
+  ensurePersistedExecutionWorkspaceAvailable,
+  listConfiguredRuntimeServiceEntries,
+  startRuntimeServicesForWorkspaceControl,
+  stopRuntimeServicesForExecutionWorkspace,
+  stopRuntimeServicesForProjectWorkspace,
+} from "./workspace-runtime.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
 import { logActivity } from "./activity-log.js";
@@ -53,7 +69,6 @@ export interface HomeToolDescriptor {
   description: string;
   category: HomeToolCategory;
   riskLevel: HomeToolRiskLevel;
-  requiresConfirmation: boolean;
   inputSchema: Record<string, unknown>;
   keywords: string[];
 }
@@ -68,10 +83,9 @@ export interface HomeToolExecution {
   toolCallId: string;
   descriptor: HomeToolDescriptor;
   input: Record<string, unknown>;
-  status: "completed" | "confirmation_required";
+  status: "completed";
   content: string;
   data?: unknown;
-  confirmationId?: string;
 }
 
 interface HomeToolDefinition extends HomeToolDescriptor {
@@ -120,35 +134,111 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  if (typeof value === "object" && value !== null) {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-export function createHomeToolConfirmationId(ctx: HomeToolContext, toolName: string, input: Record<string, unknown>) {
-  return createHash("sha256")
-    .update("paperclip-home-tool-confirmation:v1\n")
-    .update(ctx.companyId)
-    .update("\n")
-    .update(ctx.ownerUserId)
-    .update("\n")
-    .update(ctx.threadId)
-    .update("\n")
-    .update(toolName)
-    .update("\n")
-    .update(stableStringify(input))
-    .digest("hex")
-    .slice(0, 32);
-}
-
 function summarizeRows(rows: unknown[], noun: string) {
   return `Found ${rows.length} ${noun}${rows.length === 1 ? "" : "s"}.`;
+}
+
+type RestartPreviewTarget =
+  | {
+      kind: "execution_workspace";
+      executionWorkspaceId: string;
+      runtimeServiceId: string | null;
+    }
+  | {
+      kind: "project_workspace";
+      projectId: string;
+      projectWorkspaceId: string | null;
+      runtimeServiceId: string | null;
+    };
+
+function createWorkspaceControlActor(ctx: HomeToolContext) {
+  return {
+    id: null,
+    name: "Board",
+    companyId: ctx.companyId,
+  };
+}
+
+function buildProjectWorkspaceRuntimeRef(input: {
+  projectId: string;
+  workspace: ProjectWorkspace;
+}) {
+  const cwd = input.workspace.cwd?.trim();
+  if (!cwd) {
+    throw badRequest("Project workspace needs a local path before Archie Bravo can manage runtime services");
+  }
+  return {
+    baseCwd: cwd,
+    source: "project_primary" as const,
+    projectId: input.projectId,
+    workspaceId: input.workspace.id,
+    repoUrl: input.workspace.repoUrl,
+    repoRef: input.workspace.repoRef,
+    strategy: "project_primary" as const,
+    cwd,
+    branchName: input.workspace.defaultRef ?? input.workspace.repoRef ?? null,
+    worktreePath: null,
+    warnings: [],
+    created: false,
+  };
+}
+
+function describeTarget(label: string, services: Array<{ serviceName: string }>) {
+  const serviceNames = services.map((service) => service.serviceName);
+  const serviceSummary =
+    serviceNames.length === 0
+      ? "no services"
+      : `${serviceNames.length} service${serviceNames.length === 1 ? "" : "s"} (${serviceNames.join(", ")})`;
+  return `${label} with ${serviceSummary}`;
+}
+
+function resolveServiceIndexFromRuntimeServiceId(input: {
+  config: Record<string, unknown>;
+  runtimeServices: WorkspaceRuntimeService[];
+  runtimeServiceId: string | null;
+  targetLabel: string;
+}) {
+  if (!input.runtimeServiceId) {
+    return {
+      runtimeServiceId: null,
+      serviceIndex: null,
+    };
+  }
+
+  const runtimeService = input.runtimeServices.find((service) => service.id === input.runtimeServiceId) ?? null;
+  if (!runtimeService) {
+    throw notFound(`Runtime service not found for ${input.targetLabel}`);
+  }
+
+  const configuredServices = listConfiguredRuntimeServiceEntries({ workspaceRuntime: input.config });
+  if (configuredServices.length === 0) {
+    throw badRequest(`${input.targetLabel} has no configured runtime services to restart`);
+  }
+
+  const namedMatches = configuredServices
+    .map((service, index) => ({
+      index,
+      name: asString((service as Record<string, unknown>).name),
+    }))
+    .filter((entry) => entry.name === runtimeService.serviceName);
+
+  if (namedMatches.length === 1) {
+    return {
+      runtimeServiceId: runtimeService.id,
+      serviceIndex: namedMatches[0]!.index,
+    };
+  }
+
+  if (configuredServices.length === 1) {
+    return {
+      runtimeServiceId: runtimeService.id,
+      serviceIndex: 0,
+    };
+  }
+
+  throw badRequest(
+    `Need a clearer runtime target for ${input.targetLabel}. This runtime service could not be mapped back to a unique configured service.`,
+  );
 }
 
 export function createHomeToolDispatcher(db: Db) {
@@ -180,6 +270,311 @@ export function createHomeToolDispatcher(db: Db) {
     return row;
   }
 
+  async function getProjectWorkspaceRowById(ctx: HomeToolContext, projectWorkspaceId: string) {
+    return await db
+      .select({
+        id: projectWorkspaces.id,
+        companyId: projectWorkspaces.companyId,
+        projectId: projectWorkspaces.projectId,
+      })
+      .from(projectWorkspaces)
+      .where(
+        and(
+          eq(projectWorkspaces.id, projectWorkspaceId),
+          eq(projectWorkspaces.companyId, ctx.companyId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function resolveRestartPreviewTarget(
+    ctx: HomeToolContext,
+    input: Record<string, unknown>,
+  ): Promise<RestartPreviewTarget> {
+    const executionWorkspaceId = asString(input.executionWorkspaceId);
+    const projectId = asString(input.projectId);
+    const projectWorkspaceId = asString(input.projectWorkspaceId);
+    const runtimeServiceId = asString(input.runtimeServiceId);
+
+    if (executionWorkspaceId && (projectId || projectWorkspaceId)) {
+      throw badRequest("Provide either executionWorkspaceId or projectId/projectWorkspaceId when restarting a preview runtime");
+    }
+
+    if (executionWorkspaceId) {
+      return {
+        kind: "execution_workspace",
+        executionWorkspaceId,
+        runtimeServiceId,
+      };
+    }
+
+    if (projectId || projectWorkspaceId) {
+      const projectWorkspaceRow = projectWorkspaceId
+        ? await getProjectWorkspaceRowById(ctx, projectWorkspaceId)
+        : null;
+      if (projectWorkspaceId && !projectWorkspaceRow) {
+        throw notFound("Project workspace not found");
+      }
+      return {
+        kind: "project_workspace",
+        projectId: projectId ?? projectWorkspaceRow!.projectId,
+        projectWorkspaceId,
+        runtimeServiceId,
+      };
+    }
+
+    if (runtimeServiceId) {
+      const runtimeService = await db
+        .select({
+          id: workspaceRuntimeServices.id,
+          companyId: workspaceRuntimeServices.companyId,
+          projectId: workspaceRuntimeServices.projectId,
+          projectWorkspaceId: workspaceRuntimeServices.projectWorkspaceId,
+          executionWorkspaceId: workspaceRuntimeServices.executionWorkspaceId,
+        })
+        .from(workspaceRuntimeServices)
+        .where(
+          and(
+            eq(workspaceRuntimeServices.id, runtimeServiceId),
+            eq(workspaceRuntimeServices.companyId, ctx.companyId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (!runtimeService) {
+        throw notFound("Runtime service not found");
+      }
+      if (runtimeService.executionWorkspaceId) {
+        return {
+          kind: "execution_workspace",
+          executionWorkspaceId: runtimeService.executionWorkspaceId,
+          runtimeServiceId,
+        };
+      }
+      if (runtimeService.projectId || runtimeService.projectWorkspaceId) {
+        const projectWorkspaceRow = runtimeService.projectWorkspaceId
+          ? await getProjectWorkspaceRowById(ctx, runtimeService.projectWorkspaceId)
+          : null;
+        const resolvedProjectId = runtimeService.projectId ?? projectWorkspaceRow?.projectId ?? null;
+        if (!resolvedProjectId) {
+          throw badRequest("Runtime service is not attached to a project workspace Archie Bravo can resolve");
+        }
+        return {
+          kind: "project_workspace",
+          projectId: resolvedProjectId,
+          projectWorkspaceId: runtimeService.projectWorkspaceId ?? null,
+          runtimeServiceId,
+        };
+      }
+      throw badRequest("Runtime service is not attached to a controllable workspace");
+    }
+
+    throw badRequest(
+      "Need executionWorkspaceId, projectId, projectWorkspaceId, or runtimeServiceId to restart a preview runtime",
+    );
+  }
+
+  function resolveRuntimeStatePatch(input: {
+    config: Record<string, unknown>;
+    currentDesiredState: WorkspaceRuntimeDesiredState | null | undefined;
+    currentServiceStates: WorkspaceRuntimeServiceStateMap | null | undefined;
+    serviceIndex: number | null;
+  }) {
+    return buildWorkspaceRuntimeDesiredStatePatch({
+      config: { workspaceRuntime: input.config },
+      currentDesiredState: input.currentDesiredState ?? null,
+      currentServiceStates: input.currentServiceStates,
+      action: "restart",
+      serviceIndex: input.serviceIndex,
+    });
+  }
+
+  async function resolveProjectWorkspaceTarget(ctx: HomeToolContext, target: Extract<RestartPreviewTarget, { kind: "project_workspace" }>) {
+    const project = await projectSvc.getById(target.projectId);
+    if (!project) throw notFound("Project not found");
+    if (project.companyId !== ctx.companyId) throw forbidden("Project does not belong to the active company");
+
+    if (target.projectWorkspaceId) {
+      const workspace = project.workspaces.find((entry) => entry.id === target.projectWorkspaceId) ?? null;
+      if (!workspace) throw notFound("Project workspace not found");
+      return { project, workspace };
+    }
+    const runtimeWorkspaces = project.workspaces.filter(
+      (workspace) => workspace.runtimeConfig?.workspaceRuntime && workspace.cwd,
+    );
+    if (runtimeWorkspaces.length === 1) {
+      return { project, workspace: runtimeWorkspaces[0]! };
+    }
+    if (runtimeWorkspaces.length === 0) {
+      throw badRequest("Project has no runtime-configured workspace to restart");
+    }
+    throw badRequest("Need projectWorkspaceId or runtimeServiceId because this project has multiple runtime workspaces");
+  }
+
+  async function restartProjectWorkspaceRuntime(ctx: HomeToolContext, target: Extract<RestartPreviewTarget, { kind: "project_workspace" }>) {
+    const { project, workspace } = await resolveProjectWorkspaceTarget(ctx, target);
+    const runtimeConfig = workspace.runtimeConfig?.workspaceRuntime ?? null;
+    if (!runtimeConfig) {
+      throw badRequest("Project workspace has no runtime service configuration");
+    }
+
+    const selection = resolveServiceIndexFromRuntimeServiceId({
+      config: runtimeConfig,
+      runtimeServices: workspace.runtimeServices ?? [],
+      runtimeServiceId: target.runtimeServiceId,
+      targetLabel: `project workspace "${workspace.name}"`,
+    });
+
+    await stopRuntimeServicesForProjectWorkspace({
+      db,
+      projectWorkspaceId: workspace.id,
+      runtimeServiceId: selection.runtimeServiceId,
+    });
+
+    const startedServices = await startRuntimeServicesForWorkspaceControl({
+      db,
+      actor: createWorkspaceControlActor(ctx),
+      issue: null,
+      workspace: buildProjectWorkspaceRuntimeRef({
+        projectId: project.id,
+        workspace,
+      }),
+      config: { workspaceRuntime: runtimeConfig },
+      adapterEnv: {},
+      serviceIndex: selection.serviceIndex,
+    });
+
+    const nextRuntimeState = resolveRuntimeStatePatch({
+      config: runtimeConfig,
+      currentDesiredState: workspace.runtimeConfig?.desiredState ?? null,
+      currentServiceStates: workspace.runtimeConfig?.serviceStates ?? null,
+      serviceIndex: selection.serviceIndex,
+    });
+    await projectSvc.updateWorkspace(project.id, workspace.id, {
+      runtimeConfig: {
+        desiredState: nextRuntimeState.desiredState,
+        serviceStates: nextRuntimeState.serviceStates,
+      },
+    });
+
+    return {
+      content: `Restarted preview runtime for ${describeTarget(`project workspace "${workspace.name}"`, startedServices)}.`,
+      data: {
+        targetKind: "project_workspace",
+        projectId: project.id,
+        projectWorkspaceId: workspace.id,
+        runtimeServiceId: selection.runtimeServiceId,
+        startedServices,
+      },
+    };
+  }
+
+  async function restartExecutionWorkspaceRuntime(ctx: HomeToolContext, target: Extract<RestartPreviewTarget, { kind: "execution_workspace" }>) {
+    const workspace = await executionWorkspaces.getById(target.executionWorkspaceId);
+    if (!workspace) throw notFound("Execution workspace not found");
+    if (workspace.companyId !== ctx.companyId) {
+      throw forbidden("Execution workspace does not belong to the active company");
+    }
+
+    const project = workspace.projectId ? await projectSvc.getById(workspace.projectId) : null;
+    const projectWorkspace = workspace.projectWorkspaceId && project
+      ? project.workspaces.find((entry) => entry.id === workspace.projectWorkspaceId) ?? null
+      : null;
+    const runtimeConfig = workspace.config?.workspaceRuntime ?? projectWorkspace?.runtimeConfig?.workspaceRuntime ?? null;
+    if (!runtimeConfig) {
+      throw badRequest("Execution workspace has no runtime service configuration");
+    }
+
+    const selection = resolveServiceIndexFromRuntimeServiceId({
+      config: runtimeConfig,
+      runtimeServices: workspace.runtimeServices ?? [],
+      runtimeServiceId: target.runtimeServiceId,
+      targetLabel: `execution workspace "${workspace.name}"`,
+    });
+
+    await stopRuntimeServicesForExecutionWorkspace({
+      db,
+      executionWorkspaceId: workspace.id,
+      workspaceCwd: workspace.cwd,
+      runtimeServiceId: selection.runtimeServiceId,
+    });
+
+    const realizedWorkspace = await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: projectWorkspace?.cwd ?? workspace.cwd ?? "",
+        source: workspace.mode === "shared_workspace" ? "project_primary" : "task_session",
+        projectId: workspace.projectId,
+        workspaceId: workspace.projectWorkspaceId,
+        repoUrl: workspace.repoUrl,
+        repoRef: workspace.baseRef,
+      },
+      workspace: {
+        mode: workspace.mode,
+        strategyType: workspace.strategyType,
+        cwd: workspace.cwd,
+        providerRef: workspace.providerRef,
+        projectId: workspace.projectId,
+        projectWorkspaceId: workspace.projectWorkspaceId,
+        repoUrl: workspace.repoUrl,
+        baseRef: workspace.baseRef,
+        branchName: workspace.branchName,
+        config: {
+          provisionCommand: workspace.config?.provisionCommand ?? null,
+        },
+      },
+      issue: workspace.sourceIssueId
+        ? {
+            id: workspace.sourceIssueId,
+            identifier: null,
+            title: workspace.name,
+          }
+        : null,
+      agent: createWorkspaceControlActor(ctx),
+    });
+    if (!realizedWorkspace) {
+      throw badRequest("Execution workspace needs a local path before Archie Bravo can manage runtime services");
+    }
+
+    const startedServices = await startRuntimeServicesForWorkspaceControl({
+      db,
+      actor: createWorkspaceControlActor(ctx),
+      issue: workspace.sourceIssueId
+        ? {
+            id: workspace.sourceIssueId,
+            identifier: null,
+            title: workspace.name,
+          }
+        : null,
+      workspace: realizedWorkspace,
+      executionWorkspaceId: workspace.id,
+      config: { workspaceRuntime: runtimeConfig },
+      adapterEnv: {},
+      serviceIndex: selection.serviceIndex,
+    });
+
+    const nextRuntimeState = resolveRuntimeStatePatch({
+      config: runtimeConfig,
+      currentDesiredState: workspace.config?.desiredState ?? null,
+      currentServiceStates: workspace.config?.serviceStates ?? null,
+      serviceIndex: selection.serviceIndex,
+    });
+    await executionWorkspaces.update(workspace.id, {
+      metadata: mergeExecutionWorkspaceConfig(workspace.metadata, {
+        desiredState: nextRuntimeState.desiredState,
+        serviceStates: nextRuntimeState.serviceStates,
+      }),
+    });
+
+    return {
+      content: `Restarted preview runtime for ${describeTarget(`execution workspace "${workspace.name}"`, startedServices)}.`,
+      data: {
+        targetKind: "execution_workspace",
+        executionWorkspaceId: workspace.id,
+        runtimeServiceId: selection.runtimeServiceId,
+        startedServices,
+      },
+    };
+  }
+
   const definitions: HomeToolDefinition[] = [
     {
       name: "get_company_overview",
@@ -187,7 +582,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "Read the active company profile, dashboard summary, budgets, agents, issues, and current previews.",
       category: "workspace",
       riskLevel: "safe",
-      requiresConfirmation: false,
       keywords: ["overview", "company", "dashboard", "status", "workspace", "summary", "what is happening"],
       inputSchema: objectSchema({}),
       handler: async (ctx) => {
@@ -218,7 +612,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "Read the company journal/activity feed to answer what happened recently.",
       category: "journal",
       riskLevel: "safe",
-      requiresConfirmation: false,
       keywords: ["journal", "activity", "recent", "what happened", "today", "updates", "history"],
       inputSchema: objectSchema({
         limit: numberProperty("Maximum activity rows to return.", { minimum: 1, maximum: 100 }),
@@ -239,7 +632,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "Search and list company agenda items/issues by status, assignee, project, or text query.",
       category: "agenda",
       riskLevel: "safe",
-      requiresConfirmation: false,
       keywords: ["issue", "task", "agenda", "work item", "todo", "blocked", "search", "list"],
       inputSchema: objectSchema({
         q: stringProperty("Optional text query."),
@@ -265,7 +657,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "Create a new company agenda item/issue.",
       category: "agenda",
       riskLevel: "low",
-      requiresConfirmation: false,
       keywords: ["create issue", "new task", "agenda", "todo", "assign work", "make task"],
       inputSchema: objectSchema({
         title: stringProperty("Issue title."),
@@ -309,7 +700,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "Change an issue status or priority.",
       category: "agenda",
       riskLevel: "low",
-      requiresConfirmation: false,
       keywords: ["update issue", "change status", "mark done", "mark blocked", "priority"],
       inputSchema: objectSchema({
         issueId: stringProperty("Issue id."),
@@ -340,7 +730,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "List company coordinator/worker agents and their statuses.",
       category: "agents",
       riskLevel: "safe",
-      requiresConfirmation: false,
       keywords: ["agents", "workers", "coordinator", "roles", "team", "org"],
       inputSchema: objectSchema({
         includeTerminated: booleanProperty("Whether to include terminated agents."),
@@ -356,7 +745,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "Pause an agent in the active company.",
       category: "agents",
       riskLevel: "low",
-      requiresConfirmation: false,
       keywords: ["pause agent", "stop agent", "hold worker", "disable agent"],
       inputSchema: objectSchema({ agentId: stringProperty("Agent id.") }, ["agentId"]),
       handler: async (ctx, input) => {
@@ -385,7 +773,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "Resume a paused agent in the active company.",
       category: "agents",
       riskLevel: "low",
-      requiresConfirmation: false,
       keywords: ["resume agent", "unpause agent", "start agent", "reactivate worker"],
       inputSchema: objectSchema({ agentId: stringProperty("Agent id.") }, ["agentId"]),
       handler: async (ctx, input) => {
@@ -414,7 +801,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "List company projects and attached workspaces.",
       category: "projects",
       riskLevel: "safe",
-      requiresConfirmation: false,
       keywords: ["projects", "workspace", "repo", "codebase", "preview"],
       inputSchema: objectSchema({}),
       handler: async (ctx) => {
@@ -428,7 +814,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "List active execution workspaces and runtime service metadata.",
       category: "projects",
       riskLevel: "safe",
-      requiresConfirmation: false,
       keywords: ["execution workspace", "runtime", "preview", "worktree", "workspace"],
       inputSchema: objectSchema({
         status: stringProperty("Optional workspace status."),
@@ -454,7 +839,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "Find active preview/runtime URLs for the company.",
       category: "projects",
       riskLevel: "safe",
-      requiresConfirmation: false,
       keywords: ["preview", "url", "running app", "runtime service", "open app", "live app"],
       inputSchema: objectSchema({}),
       handler: async (ctx) => {
@@ -477,7 +861,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "Restart a selected project or execution workspace runtime service.",
       category: "projects",
       riskLevel: "risky",
-      requiresConfirmation: true,
       keywords: ["restart preview", "restart runtime", "refresh app", "start preview", "stop preview"],
       inputSchema: objectSchema({
         executionWorkspaceId: stringProperty("Execution workspace id when restarting an execution workspace runtime."),
@@ -485,9 +868,12 @@ export function createHomeToolDispatcher(db: Db) {
         projectWorkspaceId: stringProperty("Project workspace id when restarting a project workspace runtime."),
         runtimeServiceId: stringProperty("Optional runtime service id."),
       }),
-      handler: async () => ({
-        content: "Runtime restart confirmation was accepted. This tool is currently limited to routing intent; use the preview controls for the exact restart action until runtime target binding is fully automated.",
-      }),
+      handler: async (ctx, input) => {
+        const target = await resolveRestartPreviewTarget(ctx, input);
+        return target.kind === "execution_workspace"
+          ? await restartExecutionWorkspaceRuntime(ctx, target)
+          : await restartProjectWorkspaceRuntime(ctx, target);
+      },
     },
     {
       name: "list_goals",
@@ -495,7 +881,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "List company goals/manual plan rows.",
       category: "manual",
       riskLevel: "safe",
-      requiresConfirmation: false,
       keywords: ["manual", "goals", "plan", "north star", "mission", "strategy"],
       inputSchema: objectSchema({}),
       handler: async (ctx) => {
@@ -509,7 +894,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "Create a company goal/manual plan item.",
       category: "manual",
       riskLevel: "low",
-      requiresConfirmation: false,
       keywords: ["create goal", "manual section", "add plan", "north star"],
       inputSchema: objectSchema({
         title: stringProperty("Goal/manual item title."),
@@ -546,7 +930,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "List company recurring work routines and triggers.",
       category: "routines",
       riskLevel: "safe",
-      requiresConfirmation: false,
       keywords: ["routines", "cron", "recurring", "schedule", "automation"],
       inputSchema: objectSchema({}),
       handler: async (ctx) => {
@@ -560,7 +943,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "List company approvals, questions, and gated decisions.",
       category: "approvals",
       riskLevel: "safe",
-      requiresConfirmation: false,
       keywords: ["approvals", "questions", "decisions", "pending", "gated"],
       inputSchema: objectSchema({ status: stringProperty("Optional approval status.") }),
       handler: async (ctx, input) => {
@@ -574,7 +956,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "Read spend summaries, budget overview, by-agent spend, and quota windows.",
       category: "costs",
       riskLevel: "safe",
-      requiresConfirmation: false,
       keywords: ["cost", "budget", "spend", "burn", "quota", "risk"],
       inputSchema: objectSchema({}),
       handler: async (ctx) => {
@@ -596,7 +977,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "List reusable company skills available to agents.",
       category: "skills",
       riskLevel: "safe",
-      requiresConfirmation: false,
       keywords: ["skills", "capabilities", "company skills", "agent skills"],
       inputSchema: objectSchema({}),
       handler: async (ctx) => {
@@ -610,7 +990,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "List secret names/providers without revealing decrypted values.",
       category: "secrets",
       riskLevel: "safe",
-      requiresConfirmation: false,
       keywords: ["secrets", "integrations", "api keys", "env", "credentials"],
       inputSchema: objectSchema({}),
       handler: async (ctx) => {
@@ -640,7 +1019,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "Update company or agent budget settings.",
       category: "costs",
       riskLevel: "risky",
-      requiresConfirmation: true,
       keywords: ["update budget", "raise budget", "lower budget", "spend limit"],
       inputSchema: objectSchema({
         scope: stringProperty("company, agent, or project."),
@@ -701,7 +1079,6 @@ export function createHomeToolDispatcher(db: Db) {
       description: "List already-installed plugin tools that may be available for the company.",
       category: "plugins",
       riskLevel: "safe",
-      requiresConfirmation: false,
       keywords: ["plugins", "integrations", "external tools", "tool registry"],
       inputSchema: objectSchema({}),
       handler: async () => ({
@@ -756,7 +1133,6 @@ export function createHomeToolDispatcher(db: Db) {
     ctx: HomeToolContext;
     name: string;
     parameters: unknown;
-    confirmed?: { name: string; input: Record<string, unknown>; confirmationId: string } | null;
     toolCallId?: string;
   }): Promise<HomeToolExecution> {
     const tool = byName.get(input.name);
@@ -764,25 +1140,6 @@ export function createHomeToolDispatcher(db: Db) {
 
     const parameters = asRecord(input.parameters);
     const toolCallId = input.toolCallId ?? randomUUID();
-    const confirmationId = createHomeToolConfirmationId(input.ctx, tool.name, parameters);
-
-    if (tool.requiresConfirmation) {
-      const confirmed = input.confirmed;
-      const matchesConfirmation =
-        confirmed?.name === tool.name
-        && confirmed.confirmationId === confirmationId
-        && stableStringify(confirmed.input) === stableStringify(parameters);
-      if (!matchesConfirmation) {
-        return {
-          toolCallId,
-          descriptor: publicDescriptor(tool),
-          input: parameters,
-          status: "confirmation_required",
-          content: `Confirmation required before running ${tool.displayName}.`,
-          confirmationId,
-        };
-      }
-    }
 
     const result = await tool.handler(input.ctx, parameters);
     if (tool.riskLevel !== "safe") {
@@ -798,7 +1155,6 @@ export function createHomeToolDispatcher(db: Db) {
         details: {
           tool: tool.name,
           riskLevel: tool.riskLevel,
-          requiresConfirmation: tool.requiresConfirmation,
         },
       });
     }

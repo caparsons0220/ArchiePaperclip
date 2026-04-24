@@ -107,7 +107,7 @@ function buildSystemPrompt(input: {
     "Help with planning, prioritization, roadmap pressure-testing, launch briefs, board updates, and company operations for this company.",
     "You can use company-scoped Home tools to inspect or change the user's workspace experience. First search for tools by intent, then call a curated tool by name.",
     "Never invent URLs or call raw endpoints. Never request or expose platform/server/admin controls. Never ask the user for companyId, userId, or other scope values; the server supplies them.",
-    "Risky tools return a confirmation request instead of executing. When that happens, ask for confirmation and do not claim the action was completed.",
+    "Home tools execute immediately. Only call a tool when its effect matches the user's request, and describe the actual result returned by the server.",
     "Secret values are write-only/redacted. You may list secret metadata, but never reveal decrypted secret material.",
     "Keep answers practical, concise, and grounded in the company context provided here.",
     "Do not claim you executed actions, changed state, used tools, read files, or contacted external systems unless that actually happened in this request.",
@@ -187,16 +187,16 @@ function stringifyToolResult(value: unknown): string {
   }, 2);
 }
 
-function buildToolResultMessage(results: Array<{ name: string; content: string; data?: unknown; confirmationRequired?: boolean }>) {
+function buildToolResultMessage(results: Array<{ name: string; content: string; data?: unknown; status?: "completed" | "failed" }>) {
   return [
     "Company tool results from this request:",
     ...results.map((result) => [
       `Tool: ${result.name}`,
-      `Status: ${result.confirmationRequired ? "confirmation_required" : "completed"}`,
+      `Status: ${result.status ?? "completed"}`,
       `Summary: ${result.content}`,
       result.data === undefined ? null : `Data: ${stringifyToolResult(result.data).slice(0, 12000)}`,
     ].filter(Boolean).join("\n")),
-    "Use these results to answer the user. If any tool requires confirmation, explain exactly what needs confirmation and do not say it was completed.",
+    "Use these results to answer the user. Do not claim anything beyond what these tool results show.",
   ].join("\n\n");
 }
 
@@ -205,7 +205,6 @@ async function runHomeProviderTool(input: {
   ctx: HomeToolContext;
   name: string;
   arguments: Record<string, unknown>;
-  confirmedToolCall?: { name: string; input: Record<string, unknown>; confirmationId: string } | null;
   onEvent: (event: HomeChatStreamEvent) => Promise<void> | void;
 }) {
   const dispatcher = createHomeToolDispatcher(input.db);
@@ -215,36 +214,64 @@ async function runHomeProviderTool(input: {
     const query = typeof input.arguments.query === "string" ? input.arguments.query : "";
     const category = typeof input.arguments.category === "string" ? input.arguments.category : null;
     const limit = typeof input.arguments.limit === "number" ? input.arguments.limit : 8;
-    const results = dispatcher.searchTools(query, category, limit);
     const descriptor: HomeToolDescriptor = {
       name: "search_home_tools",
       displayName: "Search Home tools",
       description: "Search the curated company-scoped Home tool catalog.",
       category: "workspace",
       riskLevel: "safe",
-      requiresConfirmation: false,
       inputSchema: {},
       keywords: [],
     };
+    await input.onEvent({
+      type: "tool_call_requested",
+      toolCallId,
+      name: descriptor.name,
+      displayName: descriptor.displayName,
+      input: {
+        query,
+        ...(category ? { category } : {}),
+        limit,
+      },
+      riskLevel: descriptor.riskLevel,
+    });
     await input.onEvent({
       type: "tool_call_started",
       toolCallId,
       name: descriptor.name,
       displayName: descriptor.displayName,
     });
-    await input.onEvent({
-      type: "tool_call_result",
-      toolCallId,
-      name: descriptor.name,
-      displayName: descriptor.displayName,
-      content: `Found ${results.length} matching Home tools.`,
-      data: results,
-    });
-    return {
-      name: input.name,
-      content: `Found ${results.length} matching Home tools.`,
-      data: results,
-    };
+    try {
+      const results = dispatcher.searchTools(query, category, limit);
+      await input.onEvent({
+        type: "tool_call_result",
+        toolCallId,
+        name: descriptor.name,
+        displayName: descriptor.displayName,
+        content: `Found ${results.length} matching Home tools.`,
+        data: results,
+      });
+      return {
+        name: descriptor.name,
+        content: `Found ${results.length} matching Home tools.`,
+        data: results,
+        status: "completed" as const,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Home tool search failed";
+      await input.onEvent({
+        type: "tool_call_failed",
+        toolCallId,
+        name: descriptor.name,
+        displayName: descriptor.displayName,
+        error: message,
+      });
+      return {
+        name: descriptor.name,
+        content: message,
+        status: "failed" as const,
+      };
+    }
   }
 
   if (input.name !== "call_home_tool") {
@@ -254,7 +281,21 @@ async function runHomeProviderTool(input: {
   const toolName = typeof input.arguments.name === "string" ? input.arguments.name : "";
   const parameters = parseJsonRecord(input.arguments.input);
   const descriptor = dispatcher.getTool(toolName);
-  if (!descriptor) throw badRequest(`Unknown Home tool: ${toolName}`);
+  if (!descriptor) {
+    const message = `Unknown Home tool: ${toolName}`;
+    await input.onEvent({
+      type: "tool_call_failed",
+      toolCallId,
+      name: toolName || "call_home_tool",
+      displayName: toolName || "Home tool",
+      error: message,
+    });
+    return {
+      name: toolName || "call_home_tool",
+      content: message,
+      status: "failed" as const,
+    };
+  }
 
   await input.onEvent({
     type: "tool_call_requested",
@@ -263,52 +304,49 @@ async function runHomeProviderTool(input: {
     displayName: descriptor.displayName,
     input: parameters,
     riskLevel: descriptor.riskLevel,
-    requiresConfirmation: descriptor.requiresConfirmation,
   });
-
-  const execution = await dispatcher.executeTool({
-    ctx: input.ctx,
-    name: toolName,
-    parameters,
-    confirmed: input.confirmedToolCall ?? null,
+  await input.onEvent({
+    type: "tool_call_started",
     toolCallId,
+    name: descriptor.name,
+    displayName: descriptor.displayName,
   });
-  if (execution.status === "confirmation_required") {
+  try {
+    const execution = await dispatcher.executeTool({
+      ctx: input.ctx,
+      name: toolName,
+      parameters,
+      toolCallId,
+    });
     await input.onEvent({
-      type: "tool_confirmation_required",
+      type: "tool_call_result",
       toolCallId: execution.toolCallId,
       name: execution.descriptor.name,
       displayName: execution.descriptor.displayName,
-      input: execution.input,
-      confirmationId: execution.confirmationId!,
-      reason: execution.content,
+      content: execution.content,
+      data: execution.data,
     });
     return {
       name: execution.descriptor.name,
       content: execution.content,
-      confirmationRequired: true,
+      data: execution.data,
+      status: "completed" as const,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Home tool failed";
+    await input.onEvent({
+      type: "tool_call_failed",
+      toolCallId,
+      name: descriptor.name,
+      displayName: descriptor.displayName,
+      error: message,
+    });
+    return {
+      name: descriptor.name,
+      content: message,
+      status: "failed" as const,
     };
   }
-
-  await input.onEvent({
-    type: "tool_call_started",
-    toolCallId: execution.toolCallId,
-    name: execution.descriptor.name,
-    displayName: execution.descriptor.displayName,
-  });
-  await input.onEvent({
-    type: "tool_call_result",
-    toolCallId: execution.toolCallId,
-    name: execution.descriptor.name,
-    displayName: execution.descriptor.displayName,
-    content: execution.content,
-    data: execution.data,
-  });
-  return {
-    name: execution.descriptor.name,
-    content: execution.content,
-    data: execution.data,
-  };
 }
 
 function ensureProviderApiKey(provider: HomeChatProvider) {
@@ -334,7 +372,6 @@ async function streamOpenAIResponse(input: {
   model: HomeChatModel;
   systemPrompt: string;
   messages: HomeChatMessage[];
-  confirmedToolCall?: { name: string; input: Record<string, unknown>; confirmationId: string } | null;
   allowTools?: boolean;
   onDelta: (delta: string) => Promise<void> | void;
   onEvent: (event: HomeChatStreamEvent) => Promise<void> | void;
@@ -378,26 +415,13 @@ async function streamOpenAIResponse(input: {
   if (toolCalls.length > 0 && input.allowTools !== false) {
     const toolResults = [];
     for (const toolCall of toolCalls.slice(0, HOME_TOOL_LOOP_LIMIT)) {
-      try {
-        toolResults.push(await runHomeProviderTool({
-          db: input.db,
-          ctx: input.ctx,
-          name: toolCall.name,
-          arguments: toolCall.arguments,
-          confirmedToolCall: input.confirmedToolCall,
-          onEvent: input.onEvent,
-        }));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Home tool failed";
-        await input.onEvent({
-          type: "tool_call_failed",
-          toolCallId: randomUUID(),
-          name: toolCall.name,
-          displayName: toolCall.name,
-          error: message,
-        });
-        toolResults.push({ name: toolCall.name, content: message });
-      }
+      toolResults.push(await runHomeProviderTool({
+        db: input.db,
+        ctx: input.ctx,
+        name: toolCall.name,
+        arguments: toolCall.arguments,
+        onEvent: input.onEvent,
+      }));
     }
 
     const followupMessages: HomeChatMessage[] = [
@@ -429,7 +453,6 @@ async function streamAnthropicResponse(input: {
   model: HomeChatModel;
   systemPrompt: string;
   messages: HomeChatMessage[];
-  confirmedToolCall?: { name: string; input: Record<string, unknown>; confirmationId: string } | null;
   allowTools?: boolean;
   onDelta: (delta: string) => Promise<void> | void;
   onEvent: (event: HomeChatStreamEvent) => Promise<void> | void;
@@ -501,26 +524,13 @@ async function streamAnthropicResponse(input: {
   if (completedToolCalls.length > 0 && input.allowTools !== false) {
     const toolResults = [];
     for (const toolCall of completedToolCalls.slice(0, HOME_TOOL_LOOP_LIMIT)) {
-      try {
-        toolResults.push(await runHomeProviderTool({
-          db: input.db,
-          ctx: input.ctx,
-          name: toolCall.name,
-          arguments: toolCall.arguments,
-          confirmedToolCall: input.confirmedToolCall,
-          onEvent: input.onEvent,
-        }));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Home tool failed";
-        await input.onEvent({
-          type: "tool_call_failed",
-          toolCallId: randomUUID(),
-          name: toolCall.name,
-          displayName: toolCall.name,
-          error: message,
-        });
-        toolResults.push({ name: toolCall.name, content: message });
-      }
+      toolResults.push(await runHomeProviderTool({
+        db: input.db,
+        ctx: input.ctx,
+        name: toolCall.name,
+        arguments: toolCall.arguments,
+        onEvent: input.onEvent,
+      }));
     }
 
     const followupMessages: HomeChatMessage[] = [
@@ -622,7 +632,6 @@ export function homeChatService(db: Db) {
       threadId: string;
       content: string;
       modelId?: string;
-      confirmedToolCall?: { name: string; input: Record<string, unknown>; confirmationId: string } | null;
       onEvent: (event: HomeChatStreamEvent) => Promise<void> | void;
     }) => {
       const existing = await getOwnedThreadRow(input.companyId, input.ownerUserId, input.threadId);
@@ -705,46 +714,6 @@ export function homeChatService(db: Db) {
         ownerUserId: input.ownerUserId,
         threadId: input.threadId,
       };
-      const confirmedToolResults = [];
-      if (input.confirmedToolCall) {
-        try {
-          confirmedToolResults.push(await runHomeProviderTool({
-            db,
-            ctx,
-            name: "call_home_tool",
-            arguments: {
-              name: input.confirmedToolCall.name,
-              input: input.confirmedToolCall.input,
-            },
-            confirmedToolCall: input.confirmedToolCall,
-            onEvent: input.onEvent,
-          }));
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Confirmed Home tool failed";
-          await input.onEvent({
-            type: "tool_call_failed",
-            toolCallId: randomUUID(),
-            name: input.confirmedToolCall.name,
-            displayName: input.confirmedToolCall.name,
-            error: message,
-          });
-          confirmedToolResults.push({ name: input.confirmedToolCall.name, content: message });
-        }
-      }
-
-      const modelMessages = confirmedToolResults.length > 0
-        ? [
-          ...persistedMessages,
-          {
-            id: randomUUID(),
-            role: "user" as const,
-            content: buildToolResultMessage(confirmedToolResults),
-            modelId: model.id,
-            provider: model.provider,
-            createdAt: new Date().toISOString(),
-          },
-        ]
-        : persistedMessages;
       const apiKey = ensureProviderApiKey(model.provider);
       const streamInput = {
         apiKey,
@@ -752,8 +721,7 @@ export function homeChatService(db: Db) {
         ctx,
         model,
         systemPrompt,
-        messages: modelMessages,
-        confirmedToolCall: input.confirmedToolCall ?? null,
+        messages: persistedMessages,
         onDelta: async (delta: string) => {
           await input.onEvent({
             type: "assistant_delta",

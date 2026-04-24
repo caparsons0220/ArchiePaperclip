@@ -58,11 +58,6 @@ export type UpdateHomeChatThread = z.infer<typeof updateHomeChatThreadSchema>;
 export const homeChatStreamRequestSchema = z.object({
   content: z.string().trim().min(1).max(20000),
   modelId: z.string().min(1).optional(),
-  confirmedToolCall: z.object({
-    name: z.string().min(1),
-    input: z.record(z.unknown()),
-    confirmationId: z.string().min(1),
-  }).optional(),
 });
 export type HomeChatStreamRequest = z.infer<typeof homeChatStreamRequestSchema>;
 
@@ -101,8 +96,6 @@ export const homeChatToolCallRequestedEventSchema = z.object({
   displayName: z.string().min(1),
   input: z.record(z.unknown()),
   riskLevel: homeChatToolRiskLevelSchema,
-  requiresConfirmation: z.boolean(),
-  confirmationId: z.string().min(1).optional(),
 });
 
 export const homeChatToolCallStartedEventSchema = z.object({
@@ -119,16 +112,6 @@ export const homeChatToolCallResultEventSchema = z.object({
   displayName: z.string().min(1),
   content: z.string(),
   data: z.unknown().optional(),
-});
-
-export const homeChatToolConfirmationRequiredEventSchema = z.object({
-  type: z.literal("tool_confirmation_required"),
-  toolCallId: z.string().min(1),
-  name: z.string().min(1),
-  displayName: z.string().min(1),
-  input: z.record(z.unknown()),
-  confirmationId: z.string().min(1),
-  reason: z.string().min(1),
 });
 
 export const homeChatToolCallFailedEventSchema = z.object({
@@ -152,7 +135,6 @@ export const homeChatStreamEventSchema = z.union([
   homeChatToolCallRequestedEventSchema,
   homeChatToolCallStartedEventSchema,
   homeChatToolCallResultEventSchema,
-  homeChatToolConfirmationRequiredEventSchema,
   homeChatToolCallFailedEventSchema,
   homeChatErrorEventSchema,
 ]);

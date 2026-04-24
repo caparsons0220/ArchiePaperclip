@@ -1,13 +1,29 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb } from "@paperclipai/db";
+import {
+  activityLog,
+  agents,
+  budgetIncidents,
+  budgetPolicies,
+  companies,
+  createDb,
+  projects,
+  projectWorkspaces,
+  workspaceRuntimeServices,
+} from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { createHomeToolDispatcher, createHomeToolConfirmationId } from "../services/home-tools.js";
+import { createHomeToolDispatcher } from "../services/home-tools.js";
+import { projectService } from "../services/projects.js";
+import { stopRuntimeServicesForProjectWorkspace } from "../services/workspace-runtime.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport().catch(() => ({ supported: true }));
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 function createDispatcherWithoutDb() {
@@ -50,30 +66,19 @@ describe("home tool catalog", () => {
     expect(dispatcher.searchTools("adapter install server backup database migration", null, 20).map((tool) => tool.name))
       .not.toEqual(expect.arrayContaining(["install_adapter", "backup_database", "run_migration"]));
   });
-
-  it("blocks risky tools until the matching confirmation is supplied", async () => {
-    const dispatcher = createDispatcherWithoutDb();
-    const ctx = {
-      companyId: randomUUID(),
-      ownerUserId: "user-confirm",
-      threadId: randomUUID(),
-    };
-    const input = { scope: "company", monthlyCents: 1000 };
-
-    const first = await dispatcher.executeTool({
-      ctx,
-      name: "update_budget",
-      parameters: input,
-    });
-
-    expect(first.status).toBe("confirmation_required");
-    expect(first.confirmationId).toBe(createHomeToolConfirmationId(ctx, "update_budget", input));
-  });
 });
 
 describeEmbeddedPostgres("home tool execution authz", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  function createCtx(companyId: string) {
+    return {
+      companyId,
+      ownerUserId: "user-home-tools",
+      threadId: randomUUID(),
+    };
+  }
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-home-tools-");
@@ -81,6 +86,12 @@ describeEmbeddedPostgres("home tool execution authz", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(workspaceRuntimeServices);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(budgetIncidents);
+    await db.delete(budgetPolicies);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -108,12 +119,150 @@ describeEmbeddedPostgres("home tool execution authz", () => {
     const dispatcher = createHomeToolDispatcher(db);
     await expect(dispatcher.executeTool({
       ctx: {
-        companyId: companyA.id,
+        ...createCtx(companyA.id),
         ownerUserId: "user-cross-company",
-        threadId: randomUUID(),
       },
       name: "pause_agent",
       parameters: { agentId: foreignAgent.id },
     })).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("executes risky budget updates immediately", async () => {
+    const company = await insertCompany(db, "Budget Company");
+    const dispatcher = createHomeToolDispatcher(db);
+
+    const result = await dispatcher.executeTool({
+      ctx: createCtx(company.id),
+      name: "update_budget",
+      parameters: { scope: "company", monthlyCents: 1000 },
+    });
+
+    expect(result.status).toBe("completed");
+    expect(result.content).toContain("Updated company budget");
+
+    const updatedCompany = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, company.id))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedCompany?.budgetMonthlyCents).toBe(1000);
+  });
+
+  it("restarts a project preview runtime through the real workspace runtime path", async () => {
+    const company = await insertCompany(db, "Runtime Company");
+    const projects = projectService(db);
+    const dispatcher = createHomeToolDispatcher(db);
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-home-tool-runtime-"));
+    const originalShell = process.env.SHELL;
+    if (process.platform === "win32") {
+      process.env.SHELL = "C:\\Program Files\\Git\\bin\\bash.exe";
+    }
+
+    try {
+      const project = await projects.create(company.id, {
+        name: "Preview Project",
+      });
+      const workspace = await projects.createWorkspace(project.id, {
+        name: "Preview Workspace",
+        cwd: workspaceRoot,
+        isPrimary: true,
+        runtimeConfig: {
+          workspaceRuntime: {
+            services: [
+              {
+                name: "web",
+                command:
+                  "node -e \"require('node:http').createServer((req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+                port: { type: "auto" },
+                readiness: {
+                  type: "http",
+                  urlTemplate: "http://127.0.0.1:{{port}}",
+                  timeoutSec: 10,
+                  intervalMs: 100,
+                },
+                lifecycle: "shared",
+                reuseScope: "project_workspace",
+                stopPolicy: {
+                  type: "manual",
+                },
+              },
+            ],
+          },
+        },
+      });
+      expect(workspace).not.toBeNull();
+
+      const result = await dispatcher.executeTool({
+        ctx: createCtx(company.id),
+        name: "restart_preview_runtime",
+        parameters: { projectId: project.id },
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toContain("Restarted preview runtime");
+      const data = result.data as { projectWorkspaceId: string; startedServices: Array<{ url: string | null }> };
+      expect(data.projectWorkspaceId).toBe(workspace!.id);
+      expect(data.startedServices).toHaveLength(1);
+      await expect(fetch(data.startedServices[0]!.url!)).resolves.toMatchObject({ ok: true });
+
+      await stopRuntimeServicesForProjectWorkspace({
+        db,
+        projectWorkspaceId: workspace!.id,
+      });
+    } finally {
+      process.env.SHELL = originalShell;
+      await fs.rm(workspaceRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it("fails with a concrete error when a project has multiple runtime workspaces and no target workspace is provided", async () => {
+    const company = await insertCompany(db, "Ambiguous Runtime Company");
+    const projects = projectService(db);
+    const dispatcher = createHomeToolDispatcher(db);
+    const firstWorkspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-home-tool-runtime-a-"));
+    const secondWorkspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-home-tool-runtime-b-"));
+
+    try {
+      const project = await projects.create(company.id, {
+        name: "Ambiguous Preview Project",
+      });
+
+      const runtimeConfig = {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command: "node -e \"setInterval(() => {}, 1000)\"",
+              lifecycle: "shared",
+              reuseScope: "project_workspace",
+            },
+          ],
+        },
+      };
+
+      await projects.createWorkspace(project.id, {
+        name: "Primary Preview",
+        cwd: firstWorkspaceRoot,
+        isPrimary: true,
+        runtimeConfig,
+      });
+      await projects.createWorkspace(project.id, {
+        name: "Secondary Preview",
+        cwd: secondWorkspaceRoot,
+        runtimeConfig,
+      });
+
+      await expect(dispatcher.executeTool({
+        ctx: createCtx(company.id),
+        name: "restart_preview_runtime",
+        parameters: { projectId: project.id },
+      })).rejects.toMatchObject({
+        status: 400,
+        message: "Need projectWorkspaceId or runtimeServiceId because this project has multiple runtime workspaces",
+      });
+    } finally {
+      await fs.rm(firstWorkspaceRoot, { recursive: true, force: true });
+      await fs.rm(secondWorkspaceRoot, { recursive: true, force: true });
+    }
   });
 });

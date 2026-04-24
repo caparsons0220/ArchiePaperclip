@@ -68,8 +68,6 @@ export interface HomeChatToolCallRequestedEvent {
   displayName: string;
   input: Record<string, unknown>;
   riskLevel: "safe" | "low" | "risky";
-  requiresConfirmation: boolean;
-  confirmationId?: string;
 }
 
 export interface HomeChatToolCallStartedEvent {
@@ -86,16 +84,6 @@ export interface HomeChatToolCallResultEvent {
   displayName: string;
   content: string;
   data?: unknown;
-}
-
-export interface HomeChatToolConfirmationRequiredEvent {
-  type: "tool_confirmation_required";
-  toolCallId: string;
-  name: string;
-  displayName: string;
-  input: Record<string, unknown>;
-  confirmationId: string;
-  reason: string;
 }
 
 export interface HomeChatToolCallFailedEvent {
@@ -119,6 +107,5 @@ export type HomeChatStreamEvent =
   | HomeChatToolCallRequestedEvent
   | HomeChatToolCallStartedEvent
   | HomeChatToolCallResultEvent
-  | HomeChatToolConfirmationRequiredEvent
   | HomeChatToolCallFailedEvent
   | HomeChatErrorEvent;

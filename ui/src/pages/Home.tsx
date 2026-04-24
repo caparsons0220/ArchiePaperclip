@@ -58,22 +58,14 @@ const STARTER_CARDS = [
   },
 ];
 
-type ConfirmedHomeToolCall = {
-  name: string;
-  input: Record<string, unknown>;
-  confirmationId: string;
-};
-
 type HomeToolCard = {
   threadId: string;
   toolCallId: string;
   name: string;
   displayName: string;
   input: Record<string, unknown>;
-  status: "requested" | "running" | "completed" | "confirmation_required" | "failed";
+  status: "requested" | "running" | "completed" | "failed";
   riskLevel?: "safe" | "low" | "risky";
-  requiresConfirmation?: boolean;
-  confirmationId?: string;
   content?: string;
   error?: string;
 };
@@ -285,7 +277,6 @@ export function Home() {
       event.type !== "tool_call_requested"
       && event.type !== "tool_call_started"
       && event.type !== "tool_call_result"
-      && event.type !== "tool_confirmation_required"
       && event.type !== "tool_call_failed"
     ) {
       return;
@@ -308,26 +299,13 @@ export function Home() {
           displayName: event.displayName,
           input: event.input,
           riskLevel: event.riskLevel,
-          requiresConfirmation: event.requiresConfirmation,
-          confirmationId: event.confirmationId,
           status: "requested",
         }
         : event.type === "tool_call_started"
           ? { ...base, name: event.name, displayName: event.displayName, status: "running" }
           : event.type === "tool_call_result"
             ? { ...base, name: event.name, displayName: event.displayName, status: "completed", content: event.content }
-            : event.type === "tool_confirmation_required"
-              ? {
-                ...base,
-                name: event.name,
-                displayName: event.displayName,
-                input: event.input,
-                status: "confirmation_required",
-                confirmationId: event.confirmationId,
-                content: event.reason,
-                requiresConfirmation: true,
-              }
-              : { ...base, name: event.name, displayName: event.displayName, status: "failed", error: event.error };
+            : { ...base, name: event.name, displayName: event.displayName, status: "failed", error: event.error };
       return [next, ...current.filter((card) => !(card.threadId === threadId && card.toolCallId === event.toolCallId))].slice(0, 20);
     });
   }
@@ -358,7 +336,7 @@ export function Home() {
   });
 
   const sendMessageMutation = useMutation({
-    mutationFn: async ({ companyId: nextCompanyId, content, confirmedToolCall }: { companyId: string; content: string; confirmedToolCall?: ConfirmedHomeToolCall }) => {
+    mutationFn: async ({ companyId: nextCompanyId, content }: { companyId: string; content: string }) => {
       const trimmedContent = content.trim();
       if (!trimmedContent) return;
 
@@ -406,7 +384,6 @@ export function Home() {
           {
             content: trimmedContent,
             modelId: model?.id ?? selectedModelId ?? thread.selectedModelId,
-            confirmedToolCall,
           },
           async (event) => {
             upsertToolCard(thread.id, event);
@@ -548,25 +525,6 @@ export function Home() {
       await sendMessageMutation.mutateAsync({
         companyId,
         content,
-      });
-    } catch {
-      // Mutation-level error handling already surfaces the message to the composer.
-    }
-  }
-
-  async function handleConfirmTool(card: HomeToolCard) {
-    if (!companyId || !card.confirmationId) return;
-    setComposerError(null);
-
-    try {
-      await sendMessageMutation.mutateAsync({
-        companyId,
-        content: `Confirmed: ${card.displayName}`,
-        confirmedToolCall: {
-          name: card.name,
-          input: card.input,
-          confirmationId: card.confirmationId,
-        },
       });
     } catch {
       // Mutation-level error handling already surfaces the message to the composer.
@@ -725,7 +683,6 @@ export function Home() {
                         })}
 
                         {activeToolCards.map((card) => {
-                          const needsConfirmation = card.status === "confirmation_required" && card.confirmationId;
                           return (
                             <div key={card.toolCallId} className="flex justify-start">
                               <div className="max-w-[88%] rounded-[20px] border border-border/70 bg-background/95 px-4 py-3 shadow-sm sm:max-w-[78%]">
@@ -733,7 +690,7 @@ export function Home() {
                                   <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-border/70 text-muted-foreground">
                                     {card.status === "completed" ? (
                                       <CheckCircle2 className="h-4 w-4" />
-                                    ) : card.status === "confirmation_required" || card.status === "failed" ? (
+                                    ) : card.status === "failed" ? (
                                       <AlertTriangle className="h-4 w-4" />
                                     ) : (
                                       <Wrench className="h-4 w-4" />
@@ -751,23 +708,6 @@ export function Home() {
                                 {card.content || card.error ? (
                                   <div className={["mt-3 text-sm leading-6", card.error ? "text-destructive" : "text-muted-foreground"].join(" ")}>
                                     {card.error ?? card.content}
-                                  </div>
-                                ) : null}
-
-                                {needsConfirmation ? (
-                                  <div className="mt-3 flex justify-end">
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() => {
-                                        void handleConfirmTool(card);
-                                      }}
-                                      disabled={isBusy}
-                                    >
-                                      {isBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                                      Confirm
-                                    </Button>
                                   </div>
                                 ) : null}
                               </div>

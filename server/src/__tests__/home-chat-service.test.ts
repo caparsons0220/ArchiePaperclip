@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   authUsers,
+  budgetIncidents,
+  budgetPolicies,
   companies,
   createDb,
   homeChatThreads,
 } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -31,7 +35,7 @@ vi.mock("@anthropic-ai/sdk", () => ({
   })),
 }));
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport().catch(() => ({ supported: true }));
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 function createAsyncIterable<T>(items: T[]): AsyncIterable<T> {
@@ -91,6 +95,9 @@ describeEmbeddedPostgres("home chat service", () => {
   });
 
   afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(budgetIncidents);
+    await db.delete(budgetPolicies);
     await db.delete(homeChatThreads);
     await db.delete(authUsers);
     await db.delete(companies);
@@ -233,7 +240,7 @@ describeEmbeddedPostgres("home chat service", () => {
     expect(assistantMessage.content).toBe("Use pause_agent.");
   });
 
-  it("returns confirmation-required tool events instead of running risky tools", async () => {
+  it("auto-executes risky OpenAI tool calls exactly once", async () => {
     process.env.OPENAI_API_KEY = "openai-test-key";
     const userId = `user-confirm-tool-${randomUUID()}`;
     const company = await insertCompany(db, "Confirm Tool Company");
@@ -255,7 +262,7 @@ describeEmbeddedPostgres("home chat service", () => {
         },
       ]))
       .mockResolvedValueOnce(createAsyncIterable([
-        { type: "response.output_text.delta", delta: "I need confirmation before updating the budget." },
+        { type: "response.output_text.delta", delta: "Updated the company budget to $10." },
       ]));
 
     const events: Array<{ type: string; name?: string }> = [];
@@ -272,10 +279,24 @@ describeEmbeddedPostgres("home chat service", () => {
 
     expect(events).toEqual(expect.arrayContaining([
       { type: "tool_call_requested", name: "update_budget" },
-      { type: "tool_confirmation_required", name: "update_budget" },
+      { type: "tool_call_started", name: "update_budget" },
+      { type: "tool_call_result", name: "update_budget" },
     ]));
-    expect(events.map((event) => event.type)).not.toContain("tool_call_result");
-    expect(assistantMessage.content).toBe("I need confirmation before updating the budget.");
+    expect(events.map((event) => event.type)).not.toContain("tool_confirmation_required");
+    expect(assistantMessage.content).toBe("Updated the company budget to $10.");
+
+    const updatedCompany = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, company.id))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedCompany?.budgetMonthlyCents).toBe(1000);
+
+    const homeToolEvents = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.companyId, company.id));
+    expect(homeToolEvents.filter((event) => event.action === "home_tool.executed")).toHaveLength(1);
   });
 
   it("streams Anthropic replies and updates the thread's selected model", async () => {
@@ -326,6 +347,65 @@ describeEmbeddedPostgres("home chat service", () => {
       provider: "anthropic",
       modelId: "claude-haiku-4-5",
     });
+  });
+
+  it("auto-executes risky Anthropic tool calls and streams the result path", async () => {
+    process.env.ANTHROPIC_API_KEY = "anthropic-test-key";
+    const userId = `user-anthropic-tool-${randomUUID()}`;
+    const company = await insertCompany(db, "Anthropic Tool Company");
+    await insertUser(db, userId, "Anthropic Tool User");
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "claude-haiku-4-5" });
+
+    anthropicCreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "tool_use", name: "call_home_tool" },
+        },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "input_json_delta",
+            partial_json: "{\"name\":\"update_budget\",\"input\":{\"scope\":\"company\",\"monthlyCents\":2500}}",
+          },
+        },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_stop" },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "content_block_delta", delta: { type: "text_delta", text: "Budget updated." } },
+        { type: "content_block_stop" },
+        { type: "message_stop" },
+      ]));
+
+    const toolEvents: Array<{ type: string; name?: string }> = [];
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "Raise the company budget to $25.",
+      modelId: "claude-haiku-4-5",
+      onEvent: (event) => {
+        toolEvents.push({ type: event.type, name: "name" in event ? event.name : undefined });
+      },
+    });
+
+    expect(toolEvents).toEqual(expect.arrayContaining([
+      { type: "tool_call_requested", name: "update_budget" },
+      { type: "tool_call_started", name: "update_budget" },
+      { type: "tool_call_result", name: "update_budget" },
+    ]));
+    expect(toolEvents.map((event) => event.type)).not.toContain("tool_confirmation_required");
+    expect(assistantMessage.content).toBe("Budget updated.");
+
+    const updatedCompany = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, company.id))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedCompany?.budgetMonthlyCents).toBe(2500);
   });
 
   it("rejects missing provider keys after persisting the user message", async () => {
