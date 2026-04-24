@@ -36,6 +36,8 @@ const ANTHROPIC_MAX_TOKENS = 4_096;
 const HOME_TOOL_ROUND_LIMIT = 6;
 const HOME_TOOL_CALL_LIMIT = 12;
 const HOME_TOOL_RESULT_CHAR_LIMIT = 12_000;
+const UNKNOWN_HOME_TOOL_NAME = "unknown_home_tool";
+const UNKNOWN_HOME_TOOL_DISPLAY_NAME = "Unknown Home tool";
 
 type HomeChatThreadRow = typeof homeChatThreads.$inferSelect;
 type OpenAIConversationItem = Record<string, unknown>;
@@ -164,6 +166,25 @@ function serializeToolResultPayload(input: {
   }).slice(0, HOME_TOOL_RESULT_CHAR_LIMIT);
 }
 
+function sanitizeToolName(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function resolveToolIdentity(name: string, displayName?: string | null) {
+  const normalizedName = sanitizeToolName(name);
+  const normalizedDisplayName = sanitizeToolName(displayName ?? "");
+  if (normalizedName) {
+    return {
+      name: normalizedName,
+      displayName: normalizedDisplayName || normalizedName,
+    };
+  }
+  return {
+    name: UNKNOWN_HOME_TOOL_NAME,
+    displayName: UNKNOWN_HOME_TOOL_DISPLAY_NAME,
+  };
+}
+
 function mapMessagesToOpenAIInput(messages: HomeChatMessage[]): OpenAIConversationItem[] {
   return messages.map((message) => ({
     role: message.role,
@@ -217,25 +238,28 @@ async function runSelectedHomeTool(input: {
   arguments: Record<string, unknown>;
   onEvent: (event: HomeChatStreamEvent) => Promise<void> | void;
 }) {
+  const fallbackIdentity = resolveToolIdentity(input.name);
   const descriptor = input.allowedTools.get(input.name);
   if (!descriptor) {
-    const message = `Home tool is not available in this turn: ${input.name}`;
+    const message = sanitizeToolName(input.name)
+      ? `Home tool is not available in this turn: ${input.name}`
+      : "Provider emitted a Home tool call without a valid tool name.";
     await input.onEvent({
       type: "tool_call_failed",
       toolCallId: input.toolCallId,
-      name: input.name,
-      displayName: input.name,
+      name: fallbackIdentity.name,
+      displayName: fallbackIdentity.displayName,
       error: message,
     });
     return {
       toolCallId: input.toolCallId,
-      name: input.name,
-      displayName: input.name,
+      name: fallbackIdentity.name,
+      displayName: fallbackIdentity.displayName,
       content: message,
       data: undefined,
       status: "failed" as const,
       output: serializeToolResultPayload({
-        name: input.name,
+        name: fallbackIdentity.name,
         status: "failed",
         content: message,
       }),
@@ -368,20 +392,26 @@ async function streamOpenAIResponse(input: {
 
     if (current.type === "response.output_item.done" && current.item?.type === "function_call") {
       const callId = String(current.item.call_id ?? current.item.id ?? `openai-tool-${toolCalls.size}`);
+      const existing = toolCalls.get(callId);
       toolCalls.set(callId, {
         callId,
-        name: String(current.item.name ?? ""),
-        arguments: parseJsonRecord(current.item.arguments),
+        name: sanitizeToolName(current.item.name) || existing?.name || "",
+        arguments: Object.keys(parseJsonRecord(current.item.arguments)).length > 0
+          ? parseJsonRecord(current.item.arguments)
+          : existing?.arguments ?? {},
       });
       continue;
     }
 
     if (current.type === "response.function_call_arguments.done") {
       const callId = String(current.call_id ?? current.item_id ?? `openai-tool-${toolCalls.size}`);
+      const existing = toolCalls.get(callId);
       toolCalls.set(callId, {
         callId,
-        name: String(current.name ?? ""),
-        arguments: parseJsonRecord(current.arguments),
+        name: sanitizeToolName(current.name) || existing?.name || "",
+        arguments: Object.keys(parseJsonRecord(current.arguments)).length > 0
+          ? parseJsonRecord(current.arguments)
+          : existing?.arguments ?? {},
       });
       continue;
     }

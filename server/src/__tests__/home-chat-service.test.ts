@@ -310,6 +310,61 @@ describeEmbeddedPostgres("home chat service", () => {
     expect(assistantMessage.content).toBe("I can help with agents, budgets, projects, and approvals.");
   });
 
+  it("emits a valid failure event when OpenAI streams a malformed tool call without a name", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-malformed-tool-${randomUUID()}`;
+    const company = await insertCompany(db, "Malformed Tool Company");
+    await insertUser(db, userId, "Malformed Tool User");
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4-mini" });
+
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.function_call_arguments.done",
+          call_id: "call-missing-name",
+          arguments: JSON.stringify({ scope: "company", monthlyCents: 1000 }),
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "I couldn't run that tool call." },
+      ]));
+
+    const toolEvents: Array<{ type: string; name?: string; displayName?: string; error?: string }> = [];
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "Give me a company overview.",
+      modelId: "gpt-5.4-mini",
+      onEvent: (event) => {
+        if (
+          event.type === "tool_call_failed"
+          || event.type === "tool_call_requested"
+          || event.type === "tool_call_started"
+          || event.type === "tool_call_result"
+        ) {
+          toolEvents.push({
+            type: event.type,
+            name: event.name,
+            displayName: event.displayName,
+            error: "error" in event ? event.error : undefined,
+          });
+        }
+      },
+    });
+
+    expect(toolEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "tool_call_failed",
+        name: "unknown_home_tool",
+        displayName: "Unknown Home tool",
+      }),
+    ]));
+    expect(toolEvents.find((event) => event.type === "tool_call_failed")?.error)
+      .toContain("without a valid tool name");
+    expect(assistantMessage.content).toBe("I couldn't run that tool call.");
+  });
+
   it("auto-executes risky OpenAI tool calls exactly once", async () => {
     process.env.OPENAI_API_KEY = "openai-test-key";
     const userId = `user-confirm-tool-${randomUUID()}`;
