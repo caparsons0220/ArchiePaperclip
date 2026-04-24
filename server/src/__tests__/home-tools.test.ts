@@ -43,6 +43,20 @@ async function insertCompany(db: ReturnType<typeof createDb>, name: string) {
 }
 
 describe("home tool catalog", () => {
+  it("lists normalized inventory items with stable internal source metadata", () => {
+    const dispatcher = createDispatcherWithoutDb();
+    const inventory = dispatcher.listInventory();
+    expect(inventory.length).toBeGreaterThan(0);
+    expect(inventory.every((tool) => tool.sourceKind === "internal")).toBe(true);
+    expect(inventory.every((tool) => tool.sourceId === "paperclip.home.internal")).toBe(true);
+    expect(inventory.find((tool) => tool.name === "update_budget")).toMatchObject({
+      displayName: "Update budget",
+      riskLevel: "risky",
+      sourceKind: "internal",
+      sourceId: "paperclip.home.internal",
+    });
+  });
+
   it.each([
     ["create agenda item", "create_issue"],
     ["pause an agent", "pause_agent"],
@@ -56,13 +70,24 @@ describe("home tool catalog", () => {
     expect(results.map((tool) => tool.name)).toContain(expectedName);
   });
 
+  it("searches the same normalized inventory source used for listing", () => {
+    const dispatcher = createDispatcherWithoutDb();
+    expect(dispatcher.searchInventory("pause an agent", null, 8).map((tool) => tool.name))
+      .toEqual(dispatcher.searchTools("pause an agent", null, 8).map((tool) => tool.name));
+  });
+
   it("does not expose platform/server administration tools", () => {
     const dispatcher = createDispatcherWithoutDb();
     const names = dispatcher.listTools().map((tool) => tool.name);
+    const inventoryNames = dispatcher.listInventory().map((tool) => tool.name);
     expect(names).not.toContain("install_adapter");
     expect(names).not.toContain("reload_plugin");
     expect(names).not.toContain("backup_database");
     expect(names).not.toContain("run_migration");
+    expect(inventoryNames).not.toContain("install_adapter");
+    expect(inventoryNames).not.toContain("reload_plugin");
+    expect(inventoryNames).not.toContain("backup_database");
+    expect(inventoryNames).not.toContain("run_migration");
     expect(dispatcher.searchTools("adapter install server backup database migration", null, 20).map((tool) => tool.name))
       .not.toEqual(expect.arrayContaining(["install_adapter", "backup_database", "run_migration"]));
   });

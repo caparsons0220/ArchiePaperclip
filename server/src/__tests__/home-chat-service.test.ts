@@ -10,6 +10,7 @@ import {
   homeChatThreads,
 } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
+import type { HomeChatStreamEvent } from "@paperclipai/shared/home-chat";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -238,6 +239,102 @@ describeEmbeddedPostgres("home chat service", () => {
     expect(openAICreateMock).toHaveBeenCalledTimes(2);
     expect(events).toEqual(expect.arrayContaining(["tool_call_started", "tool_call_result"]));
     expect(assistantMessage.content).toBe("Use pause_agent.");
+  });
+
+  it("lists Home tools and streams the inventory result path", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-list-tools-${randomUUID()}`;
+    const company = await insertCompany(db, "Inventory Company");
+    await insertUser(db, userId, "Inventory User");
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    const seenEvents: HomeChatStreamEvent[] = [];
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            name: "list_home_tools",
+            arguments: JSON.stringify({ limit: 5 }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "I can list costs, activity, projects, and agent controls." },
+      ]));
+
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "What tools do you have?",
+      modelId: "gpt-5.4",
+      onEvent: (event) => {
+        seenEvents.push(event);
+      },
+    });
+
+    const toolResultEvent = seenEvents.find((event) =>
+      event.type === "tool_call_result" && event.name === "list_home_tools",
+    );
+    expect(toolResultEvent).toBeDefined();
+    expect(toolResultEvent && "content" in toolResultEvent ? toolResultEvent.content : null)
+      .toBe("Listed 5 available Home tools.");
+    expect(toolResultEvent && "data" in toolResultEvent && Array.isArray(toolResultEvent.data) ? toolResultEvent.data : [])
+      .toHaveLength(5);
+    expect(assistantMessage.content).toBe("I can list costs, activity, projects, and agent controls.");
+  });
+
+  it("returns fallback inventory when an OpenAI tool search finds no exact matches", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-vague-tools-${randomUUID()}`;
+    const company = await insertCompany(db, "Fallback Company");
+    await insertUser(db, userId, "Fallback User");
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    const seenEvents: HomeChatStreamEvent[] = [];
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            name: "search_home_tools",
+            arguments: JSON.stringify({ query: "blorpo quasar wrenchdance", limit: 4 }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "I found no exact match, but I can list available workspace tools." },
+      ]));
+
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "Find a tool for blorpo quasar wrenchdance",
+      modelId: "gpt-5.4",
+      onEvent: (event) => {
+        seenEvents.push(event);
+      },
+    });
+
+    const toolResultEvent = seenEvents.find((event) =>
+      event.type === "tool_call_result" && event.name === "search_home_tools",
+    );
+    expect(toolResultEvent).toBeDefined();
+    expect(toolResultEvent && "content" in toolResultEvent ? toolResultEvent.content : null)
+      .toBe("No exact matches; here are available Home tools.");
+    const searchData = toolResultEvent && "data" in toolResultEvent && typeof toolResultEvent.data === "object" && toolResultEvent.data
+      ? toolResultEvent.data as {
+        results: Array<{ name: string }>;
+        fallbackInventory?: Array<{ name: string }>;
+      }
+      : null;
+    expect(searchData?.results).toEqual([]);
+    expect(searchData?.fallbackInventory?.length).toBe(4);
+    expect(assistantMessage.content).toBe("I found no exact match, but I can list available workspace tools.");
   });
 
   it("auto-executes risky OpenAI tool calls exactly once", async () => {

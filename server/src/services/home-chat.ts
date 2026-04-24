@@ -9,6 +9,7 @@ import {
   type CreateHomeChatThread,
   type HomeChatMessage,
   type HomeChatModel,
+  type HomeChatToolSearchResultData,
   type HomeChatProvider,
   type HomeChatStreamEvent,
   type HomeChatThread,
@@ -105,7 +106,10 @@ function buildSystemPrompt(input: {
     `Current company: ${input.companyName}`,
     descriptionLine,
     "Help with planning, prioritization, roadmap pressure-testing, launch briefs, board updates, and company operations for this company.",
-    "You can use company-scoped Home tools to inspect or change the user's workspace experience. First search for tools by intent, then call a curated tool by name.",
+    "You can use company-scoped Home tools to inspect or change the user's workspace experience.",
+    "If the user asks what Archie can do or what tools exist, call list_home_tools first.",
+    "For a specific task, search_home_tools by intent and then call a curated tool by name.",
+    "If search_home_tools returns no exact matches or feels uncertain, call list_home_tools before answering.",
     "Never invent URLs or call raw endpoints. Never request or expose platform/server/admin controls. Never ask the user for companyId, userId, or other scope values; the server supplies them.",
     "Home tools execute immediately. Only call a tool when its effect matches the user's request, and describe the actual result returned by the server.",
     "Secret values are write-only/redacted. You may list secret metadata, but never reveal decrypted secret material.",
@@ -116,6 +120,14 @@ function buildSystemPrompt(input: {
 }
 
 function homeToolProviderDefinitions(provider: HomeChatProvider): unknown[] {
+  const listInputSchema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      category: { type: "string", description: "Optional Home tool category." },
+      limit: { type: "number", description: "Maximum tools to return." },
+    },
+  };
   const searchInputSchema = {
     type: "object",
     additionalProperties: false,
@@ -130,7 +142,7 @@ function homeToolProviderDefinitions(provider: HomeChatProvider): unknown[] {
     type: "object",
     additionalProperties: false,
     properties: {
-      name: { type: "string", description: "Curated Home tool name returned by search_home_tools." },
+      name: { type: "string", description: "Curated Home tool name returned by list_home_tools or search_home_tools." },
       input: { type: "object", description: "Input object for the selected Home tool." },
     },
     required: ["name", "input"],
@@ -138,6 +150,11 @@ function homeToolProviderDefinitions(provider: HomeChatProvider): unknown[] {
 
   if (provider === "anthropic") {
     return [
+      {
+        name: "list_home_tools",
+        description: "List the currently available company-scoped Home tools.",
+        input_schema: listInputSchema,
+      },
       {
         name: "search_home_tools",
         description: "Search the curated company-scoped Home tool catalog by user intent.",
@@ -152,6 +169,12 @@ function homeToolProviderDefinitions(provider: HomeChatProvider): unknown[] {
   }
 
   return [
+    {
+      type: "function",
+      name: "list_home_tools",
+      description: "List the currently available company-scoped Home tools.",
+      parameters: listInputSchema,
+    },
     {
       type: "function",
       name: "search_home_tools",
@@ -200,6 +223,22 @@ function buildToolResultMessage(results: Array<{ name: string; content: string; 
   ].join("\n\n");
 }
 
+function createProviderToolDescriptor(input: {
+  name: string;
+  displayName: string;
+  description: string;
+}): HomeToolDescriptor {
+  return {
+    name: input.name,
+    displayName: input.displayName,
+    description: input.description,
+    category: "workspace",
+    riskLevel: "safe",
+    inputSchema: {},
+    keywords: [],
+  };
+}
+
 async function runHomeProviderTool(input: {
   db: Db;
   ctx: HomeToolContext;
@@ -210,26 +249,28 @@ async function runHomeProviderTool(input: {
   const dispatcher = createHomeToolDispatcher(input.db);
   const toolCallId = randomUUID();
 
-  if (input.name === "search_home_tools") {
-    const query = typeof input.arguments.query === "string" ? input.arguments.query : "";
+  if (input.name === "list_home_tools" || input.name === "search_home_tools") {
     const category = typeof input.arguments.category === "string" ? input.arguments.category : null;
     const limit = typeof input.arguments.limit === "number" ? input.arguments.limit : 8;
-    const descriptor: HomeToolDescriptor = {
-      name: "search_home_tools",
-      displayName: "Search Home tools",
-      description: "Search the curated company-scoped Home tool catalog.",
-      category: "workspace",
-      riskLevel: "safe",
-      inputSchema: {},
-      keywords: [],
-    };
+    const query = typeof input.arguments.query === "string" ? input.arguments.query : "";
+    const descriptor = input.name === "list_home_tools"
+      ? createProviderToolDescriptor({
+        name: "list_home_tools",
+        displayName: "List Home tools",
+        description: "List the currently available company-scoped Home tools.",
+      })
+      : createProviderToolDescriptor({
+        name: "search_home_tools",
+        displayName: "Search Home tools",
+        description: "Search the curated company-scoped Home tool catalog.",
+      });
     await input.onEvent({
       type: "tool_call_requested",
       toolCallId,
       name: descriptor.name,
       displayName: descriptor.displayName,
       input: {
-        query,
+        ...(input.name === "search_home_tools" ? { query } : {}),
         ...(category ? { category } : {}),
         limit,
       },
@@ -242,23 +283,49 @@ async function runHomeProviderTool(input: {
       displayName: descriptor.displayName,
     });
     try {
-      const results = dispatcher.searchTools(query, category, limit);
+      const data = input.name === "list_home_tools"
+        ? dispatcher.listInventory({ category, limit })
+        : (() => {
+          const results = dispatcher.searchInventory(query, category, limit);
+          const payload: HomeChatToolSearchResultData = {
+            query,
+            category,
+            results,
+          };
+          if (results.length === 0) {
+            payload.fallbackInventory = dispatcher.listInventory({ category, limit });
+          }
+          return payload;
+        })();
+      const content = input.name === "list_home_tools"
+        ? (Array.isArray(data) && data.length > 0
+          ? `Listed ${data.length} available Home tools.`
+          : "No Home tools are currently available.")
+        : ((data as HomeChatToolSearchResultData).results.length > 0
+          ? `Found ${(data as HomeChatToolSearchResultData).results.length} matching Home tools.`
+          : ((data as HomeChatToolSearchResultData).fallbackInventory?.length ?? 0) > 0
+            ? "No exact matches; here are available Home tools."
+            : "No Home tools are currently available.");
       await input.onEvent({
         type: "tool_call_result",
         toolCallId,
         name: descriptor.name,
         displayName: descriptor.displayName,
-        content: `Found ${results.length} matching Home tools.`,
-        data: results,
+        content,
+        data,
       });
       return {
         name: descriptor.name,
-        content: `Found ${results.length} matching Home tools.`,
-        data: results,
+        content,
+        data,
         status: "completed" as const,
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Home tool search failed";
+      const message = error instanceof Error
+        ? error.message
+        : input.name === "list_home_tools"
+          ? "Home tool inventory failed"
+          : "Home tool search failed";
       await input.onEvent({
         type: "tool_call_failed",
         toolCallId,

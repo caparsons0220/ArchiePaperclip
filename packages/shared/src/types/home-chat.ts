@@ -61,13 +61,35 @@ export interface HomeChatAssistantDoneEvent {
   message: HomeChatMessage;
 }
 
+export type HomeChatToolRiskLevel = "safe" | "low" | "risky";
+
+export type HomeChatToolSourceKind = "internal" | "plugin" | "mcp";
+
+export interface HomeChatToolInventoryItem {
+  name: string;
+  displayName: string;
+  description: string;
+  category: string;
+  riskLevel: HomeChatToolRiskLevel;
+  inputSchema: Record<string, unknown>;
+  sourceKind: HomeChatToolSourceKind;
+  sourceId: string;
+}
+
+export interface HomeChatToolSearchResultData {
+  query: string;
+  category: string | null;
+  results: HomeChatToolInventoryItem[];
+  fallbackInventory?: HomeChatToolInventoryItem[];
+}
+
 export interface HomeChatToolCallRequestedEvent {
   type: "tool_call_requested";
   toolCallId: string;
   name: string;
   displayName: string;
   input: Record<string, unknown>;
-  riskLevel: "safe" | "low" | "risky";
+  riskLevel: HomeChatToolRiskLevel;
 }
 
 export interface HomeChatToolCallStartedEvent {

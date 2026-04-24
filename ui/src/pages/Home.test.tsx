@@ -436,4 +436,100 @@ describe("Home", () => {
     expect(container.textContent).toContain("Restarted preview runtime for project workspace");
     expect(container.textContent).not.toContain("Confirm");
   });
+
+  it("renders Home tool inventory results cleanly", async () => {
+    const emptyThread = createThread({
+      id: "thread-inventory",
+      title: "Tool inventory",
+      messages: [
+        {
+          id: "message-1",
+          role: "user",
+          content: "What tools do you have?",
+          modelId: "gpt-5.4",
+          provider: "openai",
+          createdAt: "2026-04-22T12:04:00.000Z",
+        },
+      ],
+      messageCount: 1,
+    });
+    mockHomeChatApi.listThreads.mockResolvedValue([emptyThread]);
+    mockHomeChatApi.getThread.mockResolvedValueOnce(emptyThread).mockResolvedValue(emptyThread);
+    mockHomeChatApi.streamThread.mockImplementation(
+      async (
+        _companyId: string,
+        _threadId: string,
+        _input: { content: string; modelId?: string },
+        onEvent: (event: unknown) => Promise<void> | void,
+      ) => {
+        await onEvent({
+          type: "session",
+          threadId: "thread-inventory",
+          selectedModelId: "gpt-5.4",
+          title: "Tool inventory",
+        });
+        await onEvent({
+          type: "tool_call_requested",
+          toolCallId: "tool-list-1",
+          name: "list_home_tools",
+          displayName: "List Home tools",
+          input: { limit: 4 },
+          riskLevel: "safe",
+        });
+        await onEvent({
+          type: "tool_call_started",
+          toolCallId: "tool-list-1",
+          name: "list_home_tools",
+          displayName: "List Home tools",
+        });
+        await onEvent({
+          type: "tool_call_result",
+          toolCallId: "tool-list-1",
+          name: "list_home_tools",
+          displayName: "List Home tools",
+          content: "Listed 4 available Home tools.",
+          data: [
+            { name: "list_projects", displayName: "List projects" },
+            { name: "list_agents", displayName: "List agents" },
+          ],
+        });
+      },
+    );
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Home />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    const chip = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Plan our next product push"),
+    );
+    expect(chip).not.toBeNull();
+
+    await act(async () => {
+      chip!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const form = container.querySelector("form");
+    expect(form).not.toBeNull();
+
+    await act(async () => {
+      form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("List Home tools");
+    expect(container.textContent).toContain("Listed 4 available Home tools.");
+  });
 });
