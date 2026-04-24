@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { HomeChatMessage, HomeChatModel, HomeChatThread, HomeChatThreadSummary } from "@paperclipai/shared/home-chat";
+import type { HomeChatMessage, HomeChatModel, HomeChatStreamEvent, HomeChatThread, HomeChatThreadSummary } from "@paperclipai/shared/home-chat";
 import {
+  AlertTriangle,
   ArrowUp,
+  CheckCircle2,
   Compass,
   LoaderCircle,
   MessageSquarePlus,
   Rocket,
   Sparkles,
+  Wrench,
   WandSparkles,
 } from "lucide-react";
 import { homeChatApi } from "@/api/home-chat";
@@ -54,6 +57,26 @@ const STARTER_CARDS = [
     body: "Summarize progress, open risks, and what needs attention next.",
   },
 ];
+
+type ConfirmedHomeToolCall = {
+  name: string;
+  input: Record<string, unknown>;
+  confirmationId: string;
+};
+
+type HomeToolCard = {
+  threadId: string;
+  toolCallId: string;
+  name: string;
+  displayName: string;
+  input: Record<string, unknown>;
+  status: "requested" | "running" | "completed" | "confirmation_required" | "failed";
+  riskLevel?: "safe" | "low" | "risky";
+  requiresConfirmation?: boolean;
+  confirmationId?: string;
+  content?: string;
+  error?: string;
+};
 
 function compactWhitespace(value: string) {
   return value.replace(/\s+/g, " ").trim();
@@ -185,6 +208,7 @@ export function Home() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [pendingModelId, setPendingModelId] = useState<string | null>(null);
   const [composerError, setComposerError] = useState<string | null>(null);
+  const [toolCards, setToolCards] = useState<HomeToolCard[]>([]);
 
   const companyId = selectedCompany?.id ?? null;
   const workspaceName = selectedCompany?.name ?? "this workspace";
@@ -203,6 +227,7 @@ export function Home() {
     setPendingModelId(null);
     setDraft("");
     setComposerError(null);
+    setToolCards([]);
   }, [companyId]);
 
   const modelsQuery = useQuery({
@@ -250,6 +275,62 @@ export function Home() {
     [models, selectedModelId],
   );
   const showStarterCards = !activeThread || activeThread.messages.length === 0;
+  const activeToolCards = useMemo(
+    () => toolCards.filter((card) => card.threadId === activeThreadId),
+    [activeThreadId, toolCards],
+  );
+
+  function upsertToolCard(threadId: string, event: HomeChatStreamEvent) {
+    if (
+      event.type !== "tool_call_requested"
+      && event.type !== "tool_call_started"
+      && event.type !== "tool_call_result"
+      && event.type !== "tool_confirmation_required"
+      && event.type !== "tool_call_failed"
+    ) {
+      return;
+    }
+
+    setToolCards((current) => {
+      const existing = current.find((card) => card.threadId === threadId && card.toolCallId === event.toolCallId);
+      const base: HomeToolCard = existing ?? {
+        threadId,
+        toolCallId: event.toolCallId,
+        name: event.name,
+        displayName: event.displayName,
+        input: {},
+        status: "requested",
+      };
+      const next: HomeToolCard = event.type === "tool_call_requested"
+        ? {
+          ...base,
+          name: event.name,
+          displayName: event.displayName,
+          input: event.input,
+          riskLevel: event.riskLevel,
+          requiresConfirmation: event.requiresConfirmation,
+          confirmationId: event.confirmationId,
+          status: "requested",
+        }
+        : event.type === "tool_call_started"
+          ? { ...base, name: event.name, displayName: event.displayName, status: "running" }
+          : event.type === "tool_call_result"
+            ? { ...base, name: event.name, displayName: event.displayName, status: "completed", content: event.content }
+            : event.type === "tool_confirmation_required"
+              ? {
+                ...base,
+                name: event.name,
+                displayName: event.displayName,
+                input: event.input,
+                status: "confirmation_required",
+                confirmationId: event.confirmationId,
+                content: event.reason,
+                requiresConfirmation: true,
+              }
+              : { ...base, name: event.name, displayName: event.displayName, status: "failed", error: event.error };
+      return [next, ...current.filter((card) => !(card.threadId === threadId && card.toolCallId === event.toolCallId))].slice(0, 20);
+    });
+  }
 
   const createThreadMutation = useMutation({
     mutationFn: ({ companyId: nextCompanyId, selectedModelId }: { companyId: string; selectedModelId?: string }) =>
@@ -277,7 +358,7 @@ export function Home() {
   });
 
   const sendMessageMutation = useMutation({
-    mutationFn: async ({ companyId: nextCompanyId, content }: { companyId: string; content: string }) => {
+    mutationFn: async ({ companyId: nextCompanyId, content, confirmedToolCall }: { companyId: string; content: string; confirmedToolCall?: ConfirmedHomeToolCall }) => {
       const trimmedContent = content.trim();
       if (!trimmedContent) return;
 
@@ -325,8 +406,11 @@ export function Home() {
           {
             content: trimmedContent,
             modelId: model?.id ?? selectedModelId ?? thread.selectedModelId,
+            confirmedToolCall,
           },
           async (event) => {
+            upsertToolCard(thread.id, event);
+
             if (event.type === "session") {
               patchCachedThread(queryClient, nextCompanyId, thread.id, (current) => ({
                 ...current,
@@ -464,6 +548,25 @@ export function Home() {
       await sendMessageMutation.mutateAsync({
         companyId,
         content,
+      });
+    } catch {
+      // Mutation-level error handling already surfaces the message to the composer.
+    }
+  }
+
+  async function handleConfirmTool(card: HomeToolCard) {
+    if (!companyId || !card.confirmationId) return;
+    setComposerError(null);
+
+    try {
+      await sendMessageMutation.mutateAsync({
+        companyId,
+        content: `Confirmed: ${card.displayName}`,
+        confirmedToolCall: {
+          name: card.name,
+          input: card.input,
+          confirmationId: card.confirmationId,
+        },
       });
     } catch {
       // Mutation-level error handling already surfaces the message to the composer.
@@ -616,6 +719,57 @@ export function Home() {
                                 <div className="mt-2 whitespace-pre-wrap text-sm leading-6">
                                   {message.content || (isUser ? "" : "Thinking...")}
                                 </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {activeToolCards.map((card) => {
+                          const needsConfirmation = card.status === "confirmation_required" && card.confirmationId;
+                          return (
+                            <div key={card.toolCallId} className="flex justify-start">
+                              <div className="max-w-[88%] rounded-[20px] border border-border/70 bg-background/95 px-4 py-3 shadow-sm sm:max-w-[78%]">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-border/70 text-muted-foreground">
+                                    {card.status === "completed" ? (
+                                      <CheckCircle2 className="h-4 w-4" />
+                                    ) : card.status === "confirmation_required" || card.status === "failed" ? (
+                                      <AlertTriangle className="h-4 w-4" />
+                                    ) : (
+                                      <Wrench className="h-4 w-4" />
+                                    )}
+                                  </span>
+                                  <div className="min-w-0">
+                                    <div className="text-sm font-semibold text-foreground">{card.displayName}</div>
+                                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                                      {card.status.replaceAll("_", " ")}
+                                      {card.riskLevel ? ` - ${card.riskLevel}` : ""}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {card.content || card.error ? (
+                                  <div className={["mt-3 text-sm leading-6", card.error ? "text-destructive" : "text-muted-foreground"].join(" ")}>
+                                    {card.error ?? card.content}
+                                  </div>
+                                ) : null}
+
+                                {needsConfirmation ? (
+                                  <div className="mt-3 flex justify-end">
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => {
+                                        void handleConfirmTool(card);
+                                      }}
+                                      disabled={isBusy}
+                                    >
+                                      {isBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                                      Confirm
+                                    </Button>
+                                  </div>
+                                ) : null}
                               </div>
                             </div>
                           );

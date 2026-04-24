@@ -194,6 +194,90 @@ describeEmbeddedPostgres("home chat service", () => {
     });
   });
 
+  it("lets OpenAI search Home tools and streams tool result events", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-tools-${randomUUID()}`;
+    const company = await insertCompany(db, "Tool Company");
+    await insertUser(db, userId, "Tool User");
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            name: "search_home_tools",
+            arguments: JSON.stringify({ query: "pause an agent", limit: 5 }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "Use pause_agent." },
+      ]));
+
+    const events: string[] = [];
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "How do I pause an agent?",
+      modelId: "gpt-5.4",
+      onEvent: (event) => {
+        events.push(event.type);
+      },
+    });
+
+    expect(openAICreateMock).toHaveBeenCalledTimes(2);
+    expect(events).toEqual(expect.arrayContaining(["tool_call_started", "tool_call_result"]));
+    expect(assistantMessage.content).toBe("Use pause_agent.");
+  });
+
+  it("returns confirmation-required tool events instead of running risky tools", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-confirm-tool-${randomUUID()}`;
+    const company = await insertCompany(db, "Confirm Tool Company");
+    await insertUser(db, userId, "Confirm Tool User");
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            name: "call_home_tool",
+            arguments: JSON.stringify({
+              name: "update_budget",
+              input: { scope: "company", monthlyCents: 1000 },
+            }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "I need confirmation before updating the budget." },
+      ]));
+
+    const events: Array<{ type: string; name?: string }> = [];
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "Set the company budget to $10.",
+      modelId: "gpt-5.4",
+      onEvent: (event) => {
+        events.push({ type: event.type, name: "name" in event ? event.name : undefined });
+      },
+    });
+
+    expect(events).toEqual(expect.arrayContaining([
+      { type: "tool_call_requested", name: "update_budget" },
+      { type: "tool_confirmation_required", name: "update_budget" },
+    ]));
+    expect(events.map((event) => event.type)).not.toContain("tool_call_result");
+    expect(assistantMessage.content).toBe("I need confirmation before updating the budget.");
+  });
+
   it("streams Anthropic replies and updates the thread's selected model", async () => {
     process.env.ANTHROPIC_API_KEY = "anthropic-test-key";
     const userId = `user-claude-${randomUUID()}`;

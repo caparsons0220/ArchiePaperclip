@@ -120,6 +120,7 @@ export function homeChatRoutes(db: Db) {
           threadId,
           content: req.body.content,
           modelId: req.body.modelId,
+          confirmedToolCall: req.body.confirmedToolCall ?? null,
           onEvent: writeEvent,
         });
 
