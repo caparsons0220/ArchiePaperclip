@@ -25,6 +25,16 @@ export function homeChatRoutes(db: Db) {
     res.json(await homeChat.listModels());
   });
 
+  router.get("/companies/:companyId/ai-tools/effective", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertBoardCompanyAccess(req, companyId);
+    res.json(await homeChat.listEffectiveTools(companyId, req.actor.userId ?? "local-board", {
+      category: typeof req.query.category === "string" ? req.query.category : null,
+      includeDisabled: req.query.includeDisabled === "true",
+      limit: typeof req.query.limit === "string" ? Number(req.query.limit) : undefined,
+    }));
+  });
+
   router.get("/companies/:companyId/home-chat/threads", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertBoardCompanyAccess(req, companyId);

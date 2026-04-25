@@ -63,7 +63,36 @@ export interface HomeChatAssistantDoneEvent {
 
 export type HomeChatToolRiskLevel = "safe" | "low" | "risky";
 
-export type HomeChatToolSourceKind = "internal" | "integrations";
+export type HomeChatToolSourceKind = "internal" | "plugin" | "mcp" | "connector";
+
+export interface HomeChatToolActionInventoryItem {
+  name: string;
+  displayName: string;
+  description: string;
+  category: string;
+  family: string;
+  operationKind: "read" | "write" | "destructive";
+  riskLevel: HomeChatToolRiskLevel;
+  inputSchema: Record<string, unknown>;
+  enabled: boolean;
+  disabledReason?: string;
+}
+
+export interface HomeChatEffectiveTool {
+  registryKey: string;
+  name: string;
+  displayName: string;
+  description: string;
+  category: string;
+  riskLevel: HomeChatToolRiskLevel;
+  inputSchema: Record<string, unknown>;
+  sourceKind: HomeChatToolSourceKind;
+  sourceId: string;
+  toolsets: string[];
+  enabled: boolean;
+  disabledReason?: string;
+  actions?: HomeChatToolActionInventoryItem[];
+}
 
 export type HomeChatToolFailureCode =
   | "invalid_reference"

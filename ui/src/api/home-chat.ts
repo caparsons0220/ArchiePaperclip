@@ -1,6 +1,7 @@
 import {
   homeChatStreamEventSchema,
   type CreateHomeChatThread,
+  type HomeChatEffectiveTool,
   type HomeChatModel,
   type HomeChatStreamEvent,
   type HomeChatStreamRequest,
@@ -24,6 +25,9 @@ async function parseErrorResponse(res: Response) {
 export const homeChatApi = {
   listModels: (companyId: string) =>
     api.get<HomeChatModel[]>(`/companies/${companyId}/home-chat/models`),
+
+  listEffectiveTools: (companyId: string) =>
+    api.get<HomeChatEffectiveTool[]>(`/companies/${companyId}/ai-tools/effective?limit=20`),
 
   listThreads: (companyId: string) =>
     api.get<HomeChatThreadSummary[]>(`/companies/${companyId}/home-chat/threads`),

@@ -1,21 +1,21 @@
-import type { HomeToolCategory, HomeToolRiskLevel } from "./home-tools.js";
+import type { HomeToolCategory, HomeToolRiskLevel } from "./registry.js";
 
 export const ACTIVE_COMPANY_HOME_TOOL_SCOPE = "active_company" as const;
 
-export type InternalHomeToolCompanyScope = typeof ACTIVE_COMPANY_HOME_TOOL_SCOPE;
+export type HomeActionCompanyScope = typeof ACTIVE_COMPANY_HOME_TOOL_SCOPE;
 
-export type InternalHomeToolOperationKind = "read" | "write" | "destructive";
+export type HomeActionOperationKind = "read" | "write" | "destructive";
 
-export interface InternalHomeToolSelectorModel {
+export interface HomeActionSelectorModel {
   entityType: string;
-  scope: InternalHomeToolCompanyScope;
+  scope: HomeActionCompanyScope;
   fields: string[];
   acceptsCanonicalId: boolean;
   acceptsHumanRef: boolean;
   referenceHint: string;
 }
 
-export interface InternalHomeToolCatalogEntry {
+export interface HomeActionCatalogEntry {
   registryKey: `internal.${string}`;
   name: string;
   displayName: string;
@@ -23,10 +23,10 @@ export interface InternalHomeToolCatalogEntry {
   category: HomeToolCategory;
   family: string;
   entityType: string;
-  operationKind: InternalHomeToolOperationKind;
+  operationKind: HomeActionOperationKind;
   riskLevel: HomeToolRiskLevel;
-  companyScope: InternalHomeToolCompanyScope;
-  selectors: InternalHomeToolSelectorModel[];
+  companyScope: HomeActionCompanyScope;
+  selectors: HomeActionSelectorModel[];
   routeReferences: string[];
   serviceReferences: string[];
   companionNames: string[];
@@ -36,7 +36,7 @@ export interface InternalHomeToolCatalogEntry {
   inputSchema: Record<string, unknown>;
 }
 
-export const HOME_INTERNAL_EXCLUDED_ROUTE_PREFIXES = [
+export const HOME_CAPABILITY_EXCLUDED_ROUTE_PREFIXES = [
   "/api/health",
   "/api/auth/",
   "/llms/",
@@ -49,7 +49,7 @@ export const HOME_INTERNAL_EXCLUDED_ROUTE_PREFIXES = [
   "/api/skills/",
 ] as const;
 
-export const HOME_INTERNAL_INCLUDED_FAMILIES = [
+export const HOME_CAPABILITY_INCLUDED_FAMILIES = [
   "company_overview",
   "company_settings",
   "activity",
@@ -101,7 +101,7 @@ function activeCompanySelector(referenceHint = "Uses the active company supplied
     acceptsCanonicalId: false,
     acceptsHumanRef: false,
     referenceHint,
-  } satisfies InternalHomeToolSelectorModel;
+  } satisfies HomeActionSelectorModel;
 }
 
 function idOrRefSelector(input: {
@@ -117,7 +117,7 @@ function idOrRefSelector(input: {
     acceptsCanonicalId: true,
     acceptsHumanRef: true,
     referenceHint: input.referenceHint,
-  } satisfies InternalHomeToolSelectorModel;
+  } satisfies HomeActionSelectorModel;
 }
 
 function fieldSelector(input: {
@@ -134,14 +134,14 @@ function fieldSelector(input: {
     acceptsCanonicalId: input.acceptsCanonicalId ?? false,
     acceptsHumanRef: input.acceptsHumanRef ?? true,
     referenceHint: input.referenceHint,
-  } satisfies InternalHomeToolSelectorModel;
+  } satisfies HomeActionSelectorModel;
 }
 
 function catalogEntry(
-  input: Omit<InternalHomeToolCatalogEntry, "registryKey" | "companyScope" | "enabled"> & {
+  input: Omit<HomeActionCatalogEntry, "registryKey" | "companyScope" | "enabled"> & {
     enabled?: boolean;
   },
-): InternalHomeToolCatalogEntry {
+): HomeActionCatalogEntry {
   return {
     ...input,
     registryKey: `internal.${input.name}` as `internal.${string}`,
@@ -150,7 +150,7 @@ function catalogEntry(
   };
 }
 
-type CatalogEntryBuilderInput = Omit<InternalHomeToolCatalogEntry, "registryKey" | "companyScope" | "enabled" | "operationKind"> & {
+type CatalogEntryBuilderInput = Omit<HomeActionCatalogEntry, "registryKey" | "companyScope" | "enabled" | "operationKind"> & {
   enabled?: boolean;
 };
 
@@ -175,7 +175,7 @@ function destructiveCatalogEntry(input: CatalogEntryBuilderInput) {
   });
 }
 
-function buildPass2CatalogEntries(): InternalHomeToolCatalogEntry[] {
+function buildPass2CatalogEntries(): HomeActionCatalogEntry[] {
   return [
     readCatalogEntry({
       name: "get_company_skill",
@@ -942,7 +942,7 @@ function buildPass2CatalogEntries(): InternalHomeToolCatalogEntry[] {
   ];
 }
 
-export const INTERNAL_HOME_TOOL_CATALOG = [
+export const HOME_ACTION_CATALOG = [
   {
     registryKey: "internal.get_company_overview",
     name: "get_company_overview",
@@ -4259,6 +4259,7 @@ export const INTERNAL_HOME_TOOL_CATALOG = [
     }),
   ],
   ...buildPass2CatalogEntries(),
-] satisfies InternalHomeToolCatalogEntry[];
+] satisfies HomeActionCatalogEntry[];
 
-export type InternalHomeToolName = typeof INTERNAL_HOME_TOOL_CATALOG[number]["name"];
+export type HomeActionName = typeof HOME_ACTION_CATALOG[number]["name"];
+

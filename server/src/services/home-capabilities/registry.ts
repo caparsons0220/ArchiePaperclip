@@ -38,31 +38,31 @@ import {
   updateCompanySchema,
 } from "@paperclipai/shared";
 import type { HomeChatToolFailureData } from "@paperclipai/shared/home-chat";
-import { activityService } from "./activity.js";
-import { accessService } from "./access.js";
-import { agentService } from "./agents.js";
-import { approvalService } from "./approvals.js";
-import { assetService } from "./assets.js";
-import { budgetService } from "./budgets.js";
-import { companyService } from "./companies.js";
-import { companySkillService } from "./company-skills.js";
-import { costService } from "./costs.js";
-import { dashboardService } from "./dashboard.js";
-import { documentService } from "./documents.js";
+import { activityService } from "../activity.js";
+import { accessService } from "../access.js";
+import { agentService } from "../agents.js";
+import { approvalService } from "../approvals.js";
+import { assetService } from "../assets.js";
+import { budgetService } from "../budgets.js";
+import { companyService } from "../companies.js";
+import { companySkillService } from "../company-skills.js";
+import { costService } from "../costs.js";
+import { dashboardService } from "../dashboard.js";
+import { documentService } from "../documents.js";
 import {
   executionWorkspaceService,
   mergeExecutionWorkspaceConfig,
-} from "./execution-workspaces.js";
-import { financeService } from "./finance.js";
-import { goalService } from "./goals.js";
-import { heartbeatService } from "./heartbeat.js";
+} from "../execution-workspaces.js";
+import { financeService } from "../finance.js";
+import { goalService } from "../goals.js";
+import { heartbeatService } from "../heartbeat.js";
 import {
-  INTERNAL_HOME_TOOL_CATALOG,
-  type InternalHomeToolCatalogEntry,
-} from "./home-tool-catalog-internal.js";
-import { issueApprovalService } from "./issue-approvals.js";
-import { issueService } from "./issues.js";
-import { projectService } from "./projects.js";
+  HOME_ACTION_CATALOG,
+  type HomeActionCatalogEntry,
+} from "./action-catalog.js";
+import { issueApprovalService } from "../issue-approvals.js";
+import { issueService } from "../issues.js";
+import { projectService } from "../projects.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   ensurePersistedExecutionWorkspaceAvailable,
@@ -70,27 +70,28 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
   stopRuntimeServicesForProjectWorkspace,
-} from "./workspace-runtime.js";
-import { routineService } from "./routines.js";
-import { secretService } from "./secrets.js";
-import { sidebarBadgeService } from "./sidebar-badges.js";
-import { sidebarPreferenceService } from "./sidebar-preferences.js";
-import { workProductService } from "./work-products.js";
-import { workspaceOperationService } from "./workspace-operations.js";
-import { logActivity } from "./activity-log.js";
-import { grantsForHumanRole, resolveHumanInviteRole } from "./company-member-roles.js";
-import { agentJoinGrantsFromDefaults, humanJoinGrantsFromDefaults } from "./invite-grants.js";
-import { notifyHireApproved } from "./hire-hook.js";
-import { fetchAllQuotaWindows } from "./quota-windows.js";
-import { deduplicateAgentName } from "./agents.js";
-import { collapseDuplicatePendingHumanJoinRequests } from "../lib/join-request-dedupe.js";
-import { getStorageService } from "../storage/index.js";
-import { isAllowedContentType, MAX_ATTACHMENT_BYTES, SVG_CONTENT_TYPE } from "../attachment-types.js";
-import { badRequest, conflict, forbidden, notFound } from "../errors.js";
-import { redactEventPayload } from "../redaction.js";
-import { shouldWakeAssigneeOnCheckout } from "../routes/issues-checkout-wakeup.js";
+} from "../workspace-runtime.js";
+import { routineService } from "../routines.js";
+import { secretService } from "../secrets.js";
+import { sidebarBadgeService } from "../sidebar-badges.js";
+import { sidebarPreferenceService } from "../sidebar-preferences.js";
+import { workProductService } from "../work-products.js";
+import { workspaceOperationService } from "../workspace-operations.js";
+import { logActivity } from "../activity-log.js";
+import { grantsForHumanRole, resolveHumanInviteRole } from "../company-member-roles.js";
+import { agentJoinGrantsFromDefaults, humanJoinGrantsFromDefaults } from "../invite-grants.js";
+import { notifyHireApproved } from "../hire-hook.js";
+import { fetchAllQuotaWindows } from "../quota-windows.js";
+import { deduplicateAgentName } from "../agents.js";
+import { collapseDuplicatePendingHumanJoinRequests } from "../../lib/join-request-dedupe.js";
+import { getStorageService } from "../../storage/index.js";
+import { isAllowedContentType, MAX_ATTACHMENT_BYTES, SVG_CONTENT_TYPE } from "../../attachment-types.js";
+import { badRequest, conflict, forbidden, notFound } from "../../errors.js";
+import { redactEventPayload } from "../../redaction.js";
+import { shouldWakeAssigneeOnCheckout } from "../../routes/issues-checkout-wakeup.js";
 
 export type HomeToolRiskLevel = "safe" | "low" | "risky";
+export type HomeCapabilityRiskLevel = HomeToolRiskLevel;
 
 export type HomeToolCategory =
   | "workspace"
@@ -109,8 +110,10 @@ export type HomeToolCategory =
   | "skills"
   | "assets"
   | "plugins";
+export type HomeCapabilityCategory = HomeToolCategory;
 
-export interface HomeToolDescriptor extends InternalHomeToolCatalogEntry {}
+export interface HomeToolDescriptor extends HomeActionCatalogEntry {}
+export interface HomeActionDescriptor extends HomeToolDescriptor {}
 
 export interface HomeToolInventoryItem {
   name: string;
@@ -122,6 +125,7 @@ export interface HomeToolInventoryItem {
   sourceKind: HomeChatToolSourceKind;
   sourceId: string;
 }
+export interface HomeActionInventoryItem extends HomeToolInventoryItem {}
 
 export interface HomeToolSelection {
   query: string;
@@ -129,12 +133,14 @@ export interface HomeToolSelection {
   limit: number;
   tools: HomeToolDescriptor[];
 }
+export interface HomeActionSelection extends HomeToolSelection {}
 
 export interface HomeToolContext {
   companyId: string;
   ownerUserId: string;
   threadId: string;
 }
+export interface HomeActionContext extends HomeToolContext {}
 
 export interface HomeToolExecution {
   toolCallId: string;
@@ -144,8 +150,9 @@ export interface HomeToolExecution {
   content: string;
   data?: unknown;
 }
+export interface HomeActionExecution extends HomeToolExecution {}
 
-export interface HomeToolDispatcherOptions {
+export interface HomeCapabilityRegistryOptions {
   heartbeat?: ReturnType<typeof heartbeatService>;
   heartbeatOptions?: Parameters<typeof heartbeatService>[1];
 }
@@ -178,7 +185,7 @@ interface HomeToolRefSelector {
   reference: string | null;
 }
 
-const INTERNAL_HOME_TOOL_SOURCE_ID = "paperclip.home.internal";
+const HOME_CAPABILITY_SOURCE_ID = "paperclip.home.capabilities";
 const DEFAULT_TOOL_SELECTION_LIMIT = 12;
 const CAPABILITY_TOOL_SELECTION_LIMIT = 20;
 const TOOL_SELECTION_LIMIT_MAX = 20;
@@ -816,7 +823,7 @@ function resolveServiceIndexFromRuntimeServiceId(input: {
   );
 }
 
-export function createHomeToolDispatcher(db: Db, options: HomeToolDispatcherOptions = {}) {
+export function createHomeCapabilityRegistry(db: Db, options: HomeCapabilityRegistryOptions = {}) {
   const companiesSvc = companyService(db);
   const dashboard = dashboardService(db);
   const activity = activityService(db);
@@ -7244,7 +7251,7 @@ export function createHomeToolDispatcher(db: Db, options: HomeToolDispatcherOpti
     },
   };
 
-  const definitions: HomeToolDefinition[] = INTERNAL_HOME_TOOL_CATALOG
+  const definitions: HomeToolDefinition[] = HOME_ACTION_CATALOG
     .filter((entry) => entry.enabled)
     .map((entry) => ({
       ...entry,
@@ -7335,9 +7342,9 @@ export function createHomeToolDispatcher(db: Db, options: HomeToolDispatcherOpti
   const inventoryProviders: HomeToolInventoryProvider[] = [
     {
       sourceKind: "internal",
-      sourceId: INTERNAL_HOME_TOOL_SOURCE_ID,
+      sourceId: HOME_CAPABILITY_SOURCE_ID,
       listEntries: () => definitions.map((tool) => ({
-        item: createInventoryItem("internal", INTERNAL_HOME_TOOL_SOURCE_ID, tool),
+        item: createInventoryItem("internal", HOME_CAPABILITY_SOURCE_ID, tool),
         keywords: tool.keywords,
       })),
     },
@@ -7582,3 +7589,5 @@ export function createHomeToolDispatcher(db: Db, options: HomeToolDispatcherOpti
     searchCompanyState,
   };
 }
+
+

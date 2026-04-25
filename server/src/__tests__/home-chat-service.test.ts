@@ -33,7 +33,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { cleanupHomeHeartbeatSideEffects } from "./helpers/home-heartbeat-cleanup.js";
 import { homeChatService } from "../services/home-chat.js";
-import { createHomeToolDispatcher } from "../services/home-tools.js";
+import { createHomeCapabilityRegistry } from "../services/home-capabilities/registry.js";
 import { issueService } from "../services/issues.js";
 import { projectService } from "../services/projects.js";
 import { secretService } from "../services/secrets.js";
@@ -106,7 +106,7 @@ describeEmbeddedPostgres("home chat service", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-home-chat-service-");
     db = createDb(tempDb.connectionString);
     svc = homeChatService(db, {
-      homeToolDispatcherOptions: {
+      homeCapabilityRegistryOptions: {
         heartbeatOptions: { autoStartQueuedRuns: false },
       },
     });
@@ -267,8 +267,8 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-list-agents",
-            name: "list_agents",
-            arguments: JSON.stringify({}),
+            name: "agents",
+            arguments: JSON.stringify({ action: "list_agents" }),
           },
         },
       ]))
@@ -278,8 +278,8 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-pause-agent",
-            name: "pause_agent",
-            arguments: JSON.stringify({ agentId: agent.id }),
+            name: "agents",
+            arguments: JSON.stringify({ action: "pause_agent", input: { agentId: agent.id } }),
           },
         },
       ]))
@@ -304,11 +304,10 @@ describeEmbeddedPostgres("home chat service", () => {
     expect(openAICreateMock.mock.calls[1]?.[0]).not.toHaveProperty("previous_response_id");
     expect(openAICreateMock.mock.calls[2]?.[0]).not.toHaveProperty("previous_response_id");
     const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
-    expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["list_agents", "pause_agent"]));
+    expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["ai_tools", "agents"]));
     expect(firstTools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
-      "list_home_tools",
-      "search_home_tools",
-      "call_home_tool",
+      "list_agents",
+      "pause_agent",
     ]));
     expect(openAICreateMock.mock.calls[1]?.[0]?.store).toBe(false);
     expect(openAICreateMock.mock.calls[1]?.[0]?.input).toEqual(expect.arrayContaining([
@@ -319,8 +318,8 @@ describeEmbeddedPostgres("home chat service", () => {
       {
         type: "function_call",
         call_id: "call-list-agents",
-        name: "list_agents",
-        arguments: JSON.stringify({}),
+        name: "agents",
+        arguments: JSON.stringify({ action: "list_agents" }),
       },
       {
         type: "function_call_output",
@@ -356,8 +355,8 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-list-agents",
-            name: "list_agents",
-            arguments: JSON.stringify({}),
+            name: "agents",
+            arguments: JSON.stringify({ action: "list_agents" }),
           },
         },
       ]))
@@ -367,8 +366,8 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-pause-agent-ref",
-            name: "pause_agent",
-            arguments: JSON.stringify({ agentRef: "CEO" }),
+            name: "agents",
+            arguments: JSON.stringify({ action: "pause_agent", input: { agentRef: "CEO" } }),
           },
         },
       ]))
@@ -431,8 +430,8 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-list-agents-wake",
-            name: "list_agents",
-            arguments: JSON.stringify({}),
+            name: "agents",
+            arguments: JSON.stringify({ action: "list_agents" }),
           },
         },
       ]))
@@ -442,11 +441,14 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-wake-agent",
-            name: "wake_agent",
+            name: "agents",
             arguments: JSON.stringify({
-              agentRef: "CEO",
-              reason: "manual_followup",
-              payload: { topic: "launch" },
+              action: "wake_agent",
+              input: {
+                agentRef: "CEO",
+                reason: "manual_followup",
+                payload: { topic: "launch" },
+              },
             }),
           },
         },
@@ -466,15 +468,12 @@ describeEmbeddedPostgres("home chat service", () => {
 
     const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
     expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "list_agents",
-      "get_agent",
-      "get_agent_runtime_state",
-      "wake_agent",
+      "ai_tools",
+      "agents",
     ]));
     expect(firstTools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
-      "list_home_tools",
-      "search_home_tools",
-      "call_home_tool",
+      "list_agents",
+      "wake_agent",
       "install_adapter",
       "reload_plugin",
     ]));
@@ -525,11 +524,14 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-create-company-invite",
-            name: "create_company_invite",
+            name: "access",
             arguments: JSON.stringify({
-              allowedJoinTypes: "human",
-              humanRole: "operator",
-              agentMessage: "Alex, join the company.",
+              action: "create_company_invite",
+              input: {
+                allowedJoinTypes: "human",
+                humanRole: "operator",
+                agentMessage: "Alex, join the company.",
+              },
             }),
           },
         },
@@ -549,10 +551,10 @@ describeEmbeddedPostgres("home chat service", () => {
 
     const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
     expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "create_company_invite",
-      "list_company_invites",
+      "access",
     ]));
     expect(firstTools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
+      "create_company_invite",
       "install_adapter",
       "reload_plugin",
       "backup_database",
@@ -593,8 +595,8 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-list-issues",
-            name: "list_issues",
-            arguments: JSON.stringify({ q: "Onboarding" }),
+            name: "agenda",
+            arguments: JSON.stringify({ action: "list_issues", input: { q: "Onboarding" } }),
           },
         },
       ]))
@@ -604,10 +606,13 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-add-issue-comment",
-            name: "add_issue_comment",
+            name: "agenda",
             arguments: JSON.stringify({
-              issueRef: "Onboarding",
-              body: "Need a tighter rollout checklist before launch.",
+              action: "add_issue_comment",
+              input: {
+                issueRef: "Onboarding",
+                body: "Need a tighter rollout checklist before launch.",
+              },
             }),
           },
         },
@@ -627,9 +632,7 @@ describeEmbeddedPostgres("home chat service", () => {
 
     const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
     expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "list_issues",
-      "get_issue",
-      "add_issue_comment",
+      "agenda",
     ]));
 
     const comments = await issuesSvc.listComments(issue.id, { order: "asc" });
@@ -659,9 +662,12 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-get-company-user-profile",
-            name: "get_company_user_profile",
+            name: "company",
             arguments: JSON.stringify({
-              userRef: "dotta",
+              action: "get_company_user_profile",
+              input: {
+                userRef: "dotta",
+              },
             }),
           },
         },
@@ -681,8 +687,7 @@ describeEmbeddedPostgres("home chat service", () => {
 
     const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
     expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "get_company_user_profile",
-      "list_company_user_directory",
+      "company",
     ]));
     expect(assistantMessage.content).toBe("Loaded Dotta's company profile.");
   });
@@ -706,8 +711,8 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-list-issues-archive",
-            name: "list_issues",
-            arguments: JSON.stringify({ q: "Onboarding" }),
+            name: "agenda",
+            arguments: JSON.stringify({ action: "list_issues", input: { q: "Onboarding" } }),
           },
         },
       ]))
@@ -717,9 +722,12 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-archive-issue-inbox",
-            name: "archive_issue_inbox",
+            name: "agenda",
             arguments: JSON.stringify({
-              issueRef: "Onboarding",
+              action: "archive_issue_inbox",
+              input: {
+                issueRef: "Onboarding",
+              },
             }),
           },
         },
@@ -739,9 +747,7 @@ describeEmbeddedPostgres("home chat service", () => {
 
     const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
     expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "list_issues",
-      "get_issue",
-      "archive_issue_inbox",
+      "agenda",
     ]));
     const archived = await db
       .select()
@@ -789,8 +795,8 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-list-issues-checkout",
-            name: "list_issues",
-            arguments: JSON.stringify({ q: "Onboarding" }),
+            name: "agenda",
+            arguments: JSON.stringify({ action: "list_issues", input: { q: "Onboarding" } }),
           },
         },
       ]))
@@ -800,10 +806,13 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-checkout-issue",
-            name: "checkout_issue",
+            name: "agenda",
             arguments: JSON.stringify({
-              issueRef: "Onboarding",
-              agentRef: "CEO",
+              action: "checkout_issue",
+              input: {
+                issueRef: "Onboarding",
+                agentRef: "CEO",
+              },
             }),
           },
         },
@@ -823,11 +832,8 @@ describeEmbeddedPostgres("home chat service", () => {
 
     const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
     expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "list_issues",
-      "get_issue",
-      "list_agents",
-      "get_agent",
-      "checkout_issue",
+      "agenda",
+      "agents",
     ]));
     const updatedIssue = await db
       .select()
@@ -849,13 +855,13 @@ describeEmbeddedPostgres("home chat service", () => {
     expect(assistantMessage.content).toBe("Checked out onboarding to the CEO agent.");
   });
 
-  it("executes preview stop actions end to end with runtime-aware tools", async () => {
+  it("does not expose preview/runtime control tools through the AI registry", async () => {
     process.env.OPENAI_API_KEY = "openai-test-key";
     const userId = `user-stop-preview-${randomUUID()}`;
     const company = await insertCompany(db, "Stop Preview Tool Company");
     await insertUser(db, userId, "Stop Preview User");
     const projectsSvc = projectService(db);
-    const dispatcher = createHomeToolDispatcher(db, {
+    const registry = createHomeCapabilityRegistry(db, {
       heartbeatOptions: { autoStartQueuedRuns: false },
     });
     const workspaceRoot = await fs.mkdtemp(path.join(process.cwd(), "tmp-home-chat-runtime-" + randomUUID()));
@@ -892,7 +898,7 @@ describeEmbeddedPostgres("home chat service", () => {
           },
         },
       });
-      await dispatcher.executeTool({
+      await registry.executeTool({
         ctx: {
           companyId: company.id,
           ownerUserId: userId,
@@ -925,28 +931,35 @@ describeEmbeddedPostgres("home chat service", () => {
           { type: "response.output_text.delta", delta: "Stopped the onboarding preview." },
         ]));
 
-      const assistantMessage = await svc.streamThreadReply({
+      const toolEvents: Array<{ type: string; name?: string }> = [];
+      await expect(svc.streamThreadReply({
         companyId: company.id,
         ownerUserId: userId,
         threadId: thread.id,
         content: "Stop the onboarding preview.",
         modelId: "gpt-5.4",
-        onEvent: () => undefined,
+        onEvent: (event) => {
+          if ("name" in event) {
+            toolEvents.push({ type: event.type, name: event.name });
+          }
+        },
+      })).rejects.toMatchObject({
+        status: 400,
+        message: expect.stringContaining("not available in this turn"),
       });
 
       const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
-      expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      expect(firstTools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
         "stop_project_workspace_runtime",
-        "list_projects",
-        "list_project_workspaces",
         "get_active_preview",
       ]));
+      expect(firstTools.map((tool) => tool.name)).toContain("ai_tools");
+      expect(toolEvents).toEqual([]);
       const runtimeRows = await db
         .select()
         .from(workspaceRuntimeServices)
         .where(eq(workspaceRuntimeServices.projectWorkspaceId, workspace.id));
-      expect(runtimeRows.every((row) => row.status === "stopped")).toBe(true);
-      expect(assistantMessage.content).toBe("Stopped the onboarding preview.");
+      expect(runtimeRows.some((row) => row.status === "stopped")).toBe(false);
     } finally {
       process.env.SHELL = originalShell;
       const workspaceId = await db
@@ -989,10 +1002,13 @@ describeEmbeddedPostgres("home chat service", () => {
             item: {
               type: "function_call",
               call_id: "call-rotate-secret",
-              name: "rotate_company_secret",
+              name: "secrets",
               arguments: JSON.stringify({
-                secretRef: "FOLLOWUP_BOSS_API_KEY",
-                value: "second-secret",
+                action: "rotate_company_secret",
+                input: {
+                  secretRef: "FOLLOWUP_BOSS_API_KEY",
+                  value: "second-secret",
+                },
               }),
             },
           },
@@ -1012,8 +1028,7 @@ describeEmbeddedPostgres("home chat service", () => {
 
       const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
       expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-        "list_secret_metadata",
-        "rotate_company_secret",
+        "secrets",
       ]));
       const rotated = await db
         .select()
@@ -1054,8 +1069,8 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-list-approvals",
-            name: "list_approvals",
-            arguments: JSON.stringify({ status: "pending" }),
+            name: "approvals",
+            arguments: JSON.stringify({ action: "list_approvals", input: { status: "pending" } }),
           },
         },
       ]))
@@ -1065,10 +1080,13 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-approve-approval",
-            name: "approve_approval",
+            name: "approvals",
             arguments: JSON.stringify({
-              approvalId: approval.id,
-              decisionNote: "Approved for launch.",
+              action: "approve_approval",
+              input: {
+                approvalId: approval.id,
+                decisionNote: "Approved for launch.",
+              },
             }),
           },
         },
@@ -1088,9 +1106,7 @@ describeEmbeddedPostgres("home chat service", () => {
 
     const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
     expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "list_approvals",
-      "get_approval",
-      "approve_approval",
+      "approvals",
     ]));
     const approved = await db
       .select()
@@ -1104,7 +1120,7 @@ describeEmbeddedPostgres("home chat service", () => {
     expect(assistantMessage.content).toBe("Approved the latest budget approval.");
   });
 
-  it("widens direct internal tool exposure for capability questions without wrapper tools", async () => {
+  it("widens capability tool exposure for capability questions", async () => {
     process.env.OPENAI_API_KEY = "openai-test-key";
     const userId = `user-capability-tools-${randomUUID()}`;
     const company = await insertCompany(db, "Capability Company");
@@ -1127,18 +1143,69 @@ describeEmbeddedPostgres("home chat service", () => {
     const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
     expect(firstTools.length).toBeGreaterThan(10);
     expect(firstTools.length).toBeLessThanOrEqual(20);
+    expect(firstTools.map((tool) => tool.name)).toContain("ai_tools");
     expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "agents",
+      "costs",
+      "projects",
+      "approvals",
+    ]));
+    expect(firstTools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
       "list_agents",
       "get_costs_and_budgets",
       "list_projects",
       "list_approvals",
     ]));
-    expect(firstTools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
-      "list_home_tools",
-      "search_home_tools",
-      "call_home_tool",
-    ]));
     expect(assistantMessage.content).toBe("I can help with agents, budgets, projects, and approvals.");
+  });
+
+  it("lets the model call the shared AI tool inventory for capability questions", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-ai-tool-inventory-${randomUUID()}`;
+    const company = await insertCompany(db, "AI Tool Inventory Company");
+    await insertUser(db, userId, "AI Tool Inventory User");
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-ai-tools",
+            name: "ai_tools",
+            arguments: JSON.stringify({ action: "list", limit: 8 }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "I can use company workflow tools for issues, agents, projects, approvals, costs, assets, skills, and access." },
+      ]));
+
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "What tools do you have?",
+      modelId: "gpt-5.4",
+      onEvent: () => undefined,
+    });
+
+    const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
+    expect(firstTools.map((tool) => tool.name)).toContain("ai_tools");
+    expect(firstTools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
+      "restart_preview_runtime",
+      "list_execution_workspaces",
+      "list_secret_metadata",
+    ]));
+    expect(openAICreateMock.mock.calls[1]?.[0]?.input).toEqual(expect.arrayContaining([
+      {
+        type: "function_call_output",
+        call_id: "call-ai-tools",
+        output: expect.stringContaining("\"tool\": \"ai_tools\""),
+      },
+    ]));
+    expect(assistantMessage.content).toBe("I can use company workflow tools for issues, agents, projects, approvals, costs, assets, skills, and access.");
   });
 
   it("rejects malformed OpenAI tool calls without emitting fake tool events", async () => {
@@ -1219,8 +1286,8 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-pause-agent-ambiguous",
-            name: "pause_agent",
-            arguments: JSON.stringify({ agentRef: "CEO" }),
+            name: "agents",
+            arguments: JSON.stringify({ action: "pause_agent", input: { agentRef: "CEO" } }),
           },
         },
       ]))
@@ -1286,8 +1353,8 @@ describeEmbeddedPostgres("home chat service", () => {
           item: {
             type: "function_call",
             call_id: "call-update-budget",
-            name: "update_budget",
-            arguments: JSON.stringify({ scope: "company", monthlyCents: 1000 }),
+            name: "costs",
+            arguments: JSON.stringify({ action: "update_budget", input: { scope: "company", monthlyCents: 1000 } }),
           },
         },
       ]))
@@ -1313,11 +1380,9 @@ describeEmbeddedPostgres("home chat service", () => {
       { type: "tool_call_result", name: "update_budget" },
     ]));
     const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
-    expect(firstTools.map((tool) => tool.name)).toContain("update_budget");
+    expect(firstTools.map((tool) => tool.name)).toContain("costs");
     expect(firstTools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
-      "list_home_tools",
-      "search_home_tools",
-      "call_home_tool",
+      "update_budget",
     ]));
     expect(events.map((event) => event.type)).not.toContain("tool_confirmation_required");
     expect(assistantMessage.content).toBe("Updated the company budget to $10.");
@@ -1398,14 +1463,14 @@ describeEmbeddedPostgres("home chat service", () => {
         {
           type: "content_block_start",
           index: 0,
-          content_block: { type: "tool_use", id: "toolu_update_budget", name: "update_budget" },
+          content_block: { type: "tool_use", id: "toolu_update_budget", name: "costs" },
         },
         {
           type: "content_block_delta",
           index: 0,
           delta: {
             type: "input_json_delta",
-            partial_json: "{\"scope\":\"company\",\"monthlyCents\":2500}",
+            partial_json: "{\"action\":\"update_budget\",\"input\":{\"scope\":\"company\",\"monthlyCents\":2500}}",
           },
         },
         { type: "content_block_stop", index: 0 },
@@ -1435,11 +1500,9 @@ describeEmbeddedPostgres("home chat service", () => {
       { type: "tool_call_result", name: "update_budget" },
     ]));
     const firstTools = anthropicCreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
-    expect(firstTools.map((tool) => tool.name)).toContain("update_budget");
+    expect(firstTools.map((tool) => tool.name)).toContain("costs");
     expect(firstTools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
-      "list_home_tools",
-      "search_home_tools",
-      "call_home_tool",
+      "update_budget",
     ]));
     expect(toolEvents.map((event) => event.type)).not.toContain("tool_confirmation_required");
     expect(assistantMessage.content).toBe("Budget updated.");

@@ -169,6 +169,7 @@ export const queryKeys = {
   },
   homeChat: {
     models: (companyId: string) => ["home-chat", companyId, "models"] as const,
+    effectiveTools: (companyId: string) => ["home-chat", companyId, "effective-tools"] as const,
     threads: (companyId: string) => ["home-chat", companyId, "threads"] as const,
     thread: (companyId: string, threadId: string) => ["home-chat", companyId, "thread", threadId] as const,
   },

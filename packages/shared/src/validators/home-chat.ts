@@ -88,7 +88,7 @@ export const homeChatAssistantDoneEventSchema = z.object({
 });
 
 export const HOME_CHAT_TOOL_RISK_LEVELS = ["safe", "low", "risky"] as const;
-export const HOME_CHAT_TOOL_SOURCE_KINDS = ["internal", "integrations"] as const;
+export const HOME_CHAT_TOOL_SOURCE_KINDS = ["internal", "plugin", "mcp", "connector"] as const;
 export const HOME_CHAT_TOOL_FAILURE_CODES = [
   "invalid_reference",
   "not_found",
@@ -105,6 +105,40 @@ export type HomeChatToolSourceKind = z.infer<typeof homeChatToolSourceKindSchema
 
 export const homeChatToolFailureCodeSchema = z.enum(HOME_CHAT_TOOL_FAILURE_CODES);
 export type HomeChatToolFailureCode = z.infer<typeof homeChatToolFailureCodeSchema>;
+
+export const homeChatToolOperationKindSchema = z.enum(["read", "write", "destructive"]);
+export type HomeChatToolOperationKind = z.infer<typeof homeChatToolOperationKindSchema>;
+
+export const homeChatToolActionInventoryItemSchema = z.object({
+  name: z.string().min(1),
+  displayName: z.string().min(1),
+  description: z.string(),
+  category: z.string().min(1),
+  family: z.string().min(1),
+  operationKind: homeChatToolOperationKindSchema,
+  riskLevel: homeChatToolRiskLevelSchema,
+  inputSchema: z.record(z.unknown()),
+  enabled: z.boolean(),
+  disabledReason: z.string().min(1).optional(),
+});
+export type HomeChatToolActionInventoryItem = z.infer<typeof homeChatToolActionInventoryItemSchema>;
+
+export const homeChatEffectiveToolSchema = z.object({
+  registryKey: z.string().min(1),
+  name: z.string().min(1),
+  displayName: z.string().min(1),
+  description: z.string(),
+  category: z.string().min(1),
+  riskLevel: homeChatToolRiskLevelSchema,
+  inputSchema: z.record(z.unknown()),
+  sourceKind: homeChatToolSourceKindSchema,
+  sourceId: z.string().min(1),
+  toolsets: z.array(z.string().min(1)),
+  enabled: z.boolean(),
+  disabledReason: z.string().min(1).optional(),
+  actions: z.array(homeChatToolActionInventoryItemSchema).optional(),
+});
+export type HomeChatEffectiveTool = z.infer<typeof homeChatEffectiveToolSchema>;
 
 export const homeChatToolFailureCandidateSchema = z.object({
   id: z.string().min(1).optional(),

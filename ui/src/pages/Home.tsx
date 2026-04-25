@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { HomeChatMessage, HomeChatModel, HomeChatStreamEvent, HomeChatThread, HomeChatThreadSummary } from "@paperclipai/shared/home-chat";
+import type {
+  HomeChatEffectiveTool,
+  HomeChatMessage,
+  HomeChatModel,
+  HomeChatStreamEvent,
+  HomeChatThread,
+  HomeChatThreadSummary,
+} from "@paperclipai/shared/home-chat";
 import {
   AlertTriangle,
   ArrowUp,
@@ -95,6 +102,10 @@ function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
   return fallback;
+}
+
+function getEnabledActions(tool: HomeChatEffectiveTool) {
+  return (tool.actions ?? []).filter((action) => action.enabled);
 }
 
 function parseDate(value: Date | string | null | undefined) {
@@ -229,6 +240,14 @@ export function Home() {
     retry: false,
   });
 
+  const effectiveToolsQuery = useQuery({
+    queryKey: companyId ? queryKeys.homeChat.effectiveTools(companyId) : ["home-chat", "no-company", "effective-tools"],
+    queryFn: () => homeChatApi.listEffectiveTools(companyId!),
+    enabled: Boolean(companyId),
+    retry: false,
+    staleTime: 60_000,
+  });
+
   const threadsQuery = useQuery({
     queryKey: companyId ? queryKeys.homeChat.threads(companyId) : ["home-chat", "no-company", "threads"],
     queryFn: () => homeChatApi.listThreads(companyId!),
@@ -248,6 +267,8 @@ export function Home() {
   const models = modelsQuery.data ?? [];
   const threads = threadsQuery.data ?? [];
   const activeThread = activeThreadQuery.data ?? null;
+  const availableCapabilities = (effectiveToolsQuery.data ?? [])
+    .filter((tool) => tool.name !== "ai_tools" && getEnabledActions(tool).length > 0);
 
   useEffect(() => {
     if (!threadsQuery.data) return;
@@ -611,6 +632,63 @@ export function Home() {
                 })}
               </div>
             </ScrollArea>
+
+            <div className="mt-4 border-t border-border/60 pt-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                  Available actions
+                </div>
+                <Badge variant="outline" className="rounded-full px-2 py-0.5 text-[10px] font-semibold">
+                  Home
+                </Badge>
+              </div>
+
+              <div className="mt-3 max-h-64 space-y-3 overflow-y-auto pr-1">
+                {effectiveToolsQuery.isLoading ? (
+                  Array.from({ length: 3 }).map((_, index) => (
+                    <div key={index} className="space-y-2">
+                      <Skeleton className="h-4 w-24" />
+                      <Skeleton className="h-7 w-full rounded-full" />
+                    </div>
+                  ))
+                ) : null}
+
+                {!effectiveToolsQuery.isLoading && availableCapabilities.length === 0 ? (
+                  <div className="text-sm leading-6 text-muted-foreground">
+                    No Home actions are available for this company.
+                  </div>
+                ) : null}
+
+                {availableCapabilities.map((tool) => {
+                  const enabledActions = getEnabledActions(tool);
+                  const visibleActions = enabledActions.slice(0, 5);
+                  return (
+                    <div key={tool.name} className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="truncate text-sm font-semibold text-foreground">{tool.displayName}</div>
+                        <span className="shrink-0 text-[11px] text-muted-foreground">{enabledActions.length}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {visibleActions.map((action) => (
+                          <span
+                            key={action.name}
+                            className="max-w-full truncate rounded-full border border-border/70 bg-background px-2 py-1 text-[11px] text-muted-foreground"
+                            title={action.description}
+                          >
+                            {action.displayName}
+                          </span>
+                        ))}
+                        {enabledActions.length > visibleActions.length ? (
+                          <span className="rounded-full border border-border/70 bg-background px-2 py-1 text-[11px] text-muted-foreground">
+                            +{enabledActions.length - visibleActions.length}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </aside>
 
           <section className="rounded-[32px] border border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(248,248,246,0.84))] p-5 shadow-[0_40px_120px_rgba(15,23,42,0.08)] dark:bg-[linear-gradient(180deg,rgba(24,24,27,0.9),rgba(12,12,14,0.95))] sm:p-6">

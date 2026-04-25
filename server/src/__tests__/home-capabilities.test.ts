@@ -56,11 +56,11 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { cleanupHomeHeartbeatSideEffects } from "./helpers/home-heartbeat-cleanup.js";
 import {
-  HOME_INTERNAL_EXCLUDED_ROUTE_PREFIXES,
-  HOME_INTERNAL_INCLUDED_FAMILIES,
-  INTERNAL_HOME_TOOL_CATALOG,
-} from "../services/home-tool-catalog-internal.js";
-import { createHomeToolDispatcher } from "../services/home-tools.js";
+  HOME_CAPABILITY_EXCLUDED_ROUTE_PREFIXES,
+  HOME_CAPABILITY_INCLUDED_FAMILIES,
+  HOME_ACTION_CATALOG,
+} from "../services/home-capabilities/action-catalog.js";
+import { createHomeCapabilityRegistry } from "../services/home-capabilities/registry.js";
 import { agentService } from "../services/agents.js";
 import { documentService } from "../services/documents.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -72,12 +72,12 @@ import { stopRuntimeServicesForProjectWorkspace } from "../services/workspace-ru
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport().catch(() => ({ supported: true }));
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-function createDispatcherWithoutDb() {
-  return createHomeToolDispatcher({} as ReturnType<typeof createDb>);
+function createRegistryWithoutDb() {
+  return createHomeCapabilityRegistry({} as ReturnType<typeof createDb>);
 }
 
-function createTestDispatcher(db: ReturnType<typeof createDb>) {
-  return createHomeToolDispatcher(db, {
+function createTestRegistry(db: ReturnType<typeof createDb>) {
+  return createHomeCapabilityRegistry(db, {
     heartbeatOptions: { autoStartQueuedRuns: false },
   });
 }
@@ -106,25 +106,25 @@ async function insertUser(db: ReturnType<typeof createDb>, userId: string, name:
   });
 }
 
-describe("home tool catalog", () => {
+describe("home capability registry", () => {
   it("lists normalized inventory items with stable internal source metadata", () => {
-    const dispatcher = createDispatcherWithoutDb();
+    const dispatcher = createRegistryWithoutDb();
     const inventory = dispatcher.listInventory();
     const updateBudget = dispatcher.searchInventory("update budget", null, 8)
       .find((tool) => tool.name === "update_budget");
     expect(inventory.length).toBeGreaterThan(0);
     expect(inventory.every((tool) => tool.sourceKind === "internal")).toBe(true);
-    expect(inventory.every((tool) => tool.sourceId === "paperclip.home.internal")).toBe(true);
+    expect(inventory.every((tool) => tool.sourceId === "paperclip.home.capabilities")).toBe(true);
     expect(updateBudget).toMatchObject({
       displayName: "Update budget",
       riskLevel: "risky",
       sourceKind: "internal",
-      sourceId: "paperclip.home.internal",
+      sourceId: "paperclip.home.capabilities",
     });
   });
 
   it("exposes stable internal registry keys for direct tool dispatch", () => {
-    const dispatcher = createDispatcherWithoutDb();
+    const dispatcher = createRegistryWithoutDb();
     expect(dispatcher.getTool("update_budget")).toMatchObject({
       registryKey: "internal.update_budget",
       name: "update_budget",
@@ -136,14 +136,14 @@ describe("home tool catalog", () => {
   });
 
   it("drives the internal catalog from a positive manifest allowlist", () => {
-    const enabledEntries = INTERNAL_HOME_TOOL_CATALOG.filter((entry) => entry.enabled);
-    const dispatcher = createDispatcherWithoutDb();
+    const enabledEntries = HOME_ACTION_CATALOG.filter((entry) => entry.enabled);
+    const dispatcher = createRegistryWithoutDb();
     const enabledNames = new Set(enabledEntries.map((entry) => entry.name));
     const enabledFamilies = new Set(enabledEntries.map((entry) => entry.family));
 
     expect(new Set(dispatcher.listTools().map((tool) => tool.name))).toEqual(enabledNames);
 
-    for (const family of HOME_INTERNAL_INCLUDED_FAMILIES) {
+    for (const family of HOME_CAPABILITY_INCLUDED_FAMILIES) {
       expect(enabledFamilies.has(family)).toBe(true);
     }
 
@@ -160,7 +160,7 @@ describe("home tool catalog", () => {
       }
       for (const routeReference of entry.routeReferences) {
         const [, routePath = ""] = routeReference.split(/\s+/, 2);
-        expect(HOME_INTERNAL_EXCLUDED_ROUTE_PREFIXES.some((prefix) => routePath.startsWith(prefix))).toBe(false);
+        expect(HOME_CAPABILITY_EXCLUDED_ROUTE_PREFIXES.some((prefix) => routePath.startsWith(prefix))).toBe(false);
       }
     }
   });
@@ -174,19 +174,19 @@ describe("home tool catalog", () => {
     ["what happened today", "list_recent_activity"],
     ["company skills", "list_company_skills"],
   ])("finds the expected tool for %s", (query, expectedName) => {
-    const dispatcher = createDispatcherWithoutDb();
+    const dispatcher = createRegistryWithoutDb();
     const results = dispatcher.searchTools(query, null, 8);
     expect(results.map((tool) => tool.name)).toContain(expectedName);
   });
 
   it("searches the same normalized inventory source used for listing", () => {
-    const dispatcher = createDispatcherWithoutDb();
+    const dispatcher = createRegistryWithoutDb();
     expect(dispatcher.searchInventory("pause an agent", null, 8).map((tool) => tool.name))
       .toEqual(dispatcher.searchTools("pause an agent", null, 8).map((tool) => tool.name));
   });
 
   it("selects a bounded direct tool subset for focused requests", () => {
-    const dispatcher = createDispatcherWithoutDb();
+    const dispatcher = createRegistryWithoutDb();
     const selection = dispatcher.selectTools("pause an agent");
     expect(selection.isCapabilityQuery).toBe(false);
     expect(selection.limit).toBe(12);
@@ -196,7 +196,7 @@ describe("home tool catalog", () => {
   });
 
   it("adds companion lookup tools for risky action turns", () => {
-    const dispatcher = createDispatcherWithoutDb();
+    const dispatcher = createRegistryWithoutDb();
     const selection = dispatcher.selectTools("restart the preview runtime");
     expect(selection.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
       "restart_preview_runtime",
@@ -207,7 +207,7 @@ describe("home tool catalog", () => {
   });
 
   it("adds agent lookup/detail tools for wake actions", () => {
-    const dispatcher = createDispatcherWithoutDb();
+    const dispatcher = createRegistryWithoutDb();
     const selection = dispatcher.selectTools("wake the CEO agent");
     expect(selection.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
       "wake_agent",
@@ -225,7 +225,7 @@ describe("home tool catalog", () => {
   });
 
   it("widens the direct tool subset for capability questions", () => {
-    const dispatcher = createDispatcherWithoutDb();
+    const dispatcher = createRegistryWithoutDb();
     const selection = dispatcher.selectTools("What can Archie do?");
     expect(selection.isCapabilityQuery).toBe(true);
     expect(selection.limit).toBe(20);
@@ -234,7 +234,7 @@ describe("home tool catalog", () => {
   });
 
   it("does not expose platform/server administration tools", () => {
-    const dispatcher = createDispatcherWithoutDb();
+    const dispatcher = createRegistryWithoutDb();
     const names = dispatcher.listTools().map((tool) => tool.name);
     const inventoryNames = dispatcher.listInventory().map((tool) => tool.name);
     expect(names).not.toContain("install_adapter");
@@ -257,13 +257,13 @@ describeEmbeddedPostgres("home tool execution authz", () => {
   function createCtx(companyId: string) {
     return {
       companyId,
-      ownerUserId: "user-home-tools",
+      ownerUserId: "user-home-capabilities",
       threadId: randomUUID(),
     };
   }
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-home-tools-");
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-home-capabilities-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
@@ -329,7 +329,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
       .returning()
       .then((rows) => rows[0]!);
 
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     await expect(dispatcher.executeTool({
       ctx: {
         ...createCtx(companyA.id),
@@ -342,7 +342,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
 
   it("executes risky budget updates immediately", async () => {
     const company = await insertCompany(db, "Budget Company");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
 
     const result = await dispatcher.executeTool({
       ctx: createCtx(company.id),
@@ -363,7 +363,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
 
   it("resolves agent refs for pause_agent, including legacy non-UUID agentId input", async () => {
     const company = await insertCompany(db, "Agent Ref Company");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const agent = await db
       .insert(agents)
       .values({
@@ -398,7 +398,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
 
   it("returns a structured ambiguity error for human agent refs", async () => {
     const company = await insertCompany(db, "Ambiguous Agent Company");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     await db.insert(agents).values([
       {
         companyId: company.id,
@@ -435,7 +435,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
 
   it("reads agent detail and org data through Home tools with service-parity results", async () => {
     const company = await insertCompany(db, "Agent Detail Company");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const agentsSvc = agentService(db);
     const ceo = await db
       .insert(agents)
@@ -508,7 +508,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
 
   it("reads and resets agent runtime sessions through Home tools with service-parity results", async () => {
     const company = await insertCompany(db, "Agent Runtime Company");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const heartbeats = heartbeatService(db);
     const agent = await db
       .insert(agents)
@@ -585,7 +585,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
 
   it("queues wakeups and on-demand heartbeats through Home tools", async () => {
     const company = await insertCompany(db, "Agent Wake Company");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const selection = dispatcher.selectTools("wake the Wake Agent");
     expect(selection.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
       "wake_agent",
@@ -732,7 +732,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
     const ownerUserId = `user-issue-comments-${randomUUID()}`;
     const company = await insertCompany(db, "Issue Comment Company");
     await insertUser(db, ownerUserId, "Issue Comment User");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const issuesSvc = issueService(db);
     const issue = await issuesSvc.create(company.id, {
       title: "Onboarding",
@@ -786,7 +786,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
     await issuesSvc.create(company.id, { title: "Onboarding", status: "todo", priority: "medium" });
     await issuesSvc.create(company.id, { title: "Onboarding", status: "todo", priority: "medium" });
 
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     await expect(dispatcher.executeTool({
       ctx: {
         companyId: company.id,
@@ -810,7 +810,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
     const ownerUserId = `user-issue-docs-${randomUUID()}`;
     const company = await insertCompany(db, "Issue Document Company");
     await insertUser(db, ownerUserId, "Issue Document User");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const issuesSvc = issueService(db);
     const docsSvc = documentService(db);
     const issue = await issuesSvc.create(company.id, {
@@ -916,7 +916,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
     const ownerUserId = `user-issue-work-products-${randomUUID()}`;
     const company = await insertCompany(db, "Issue Work Product Company");
     await insertUser(db, ownerUserId, "Issue Work Product User");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const issuesSvc = issueService(db);
     const workProductsSvc = workProductService(db);
     const issue = await issuesSvc.create(company.id, {
@@ -1000,7 +1000,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
     const ownerUserId = `user-issue-attachments-${randomUUID()}`;
     const company = await insertCompany(db, "Issue Attachment Company");
     await insertUser(db, ownerUserId, "Issue Attachment User");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const issuesSvc = issueService(db);
     const issue = await issuesSvc.create(company.id, {
       title: "Onboarding",
@@ -1052,7 +1052,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
   it("resolves project refs for project budget updates", async () => {
     const company = await insertCompany(db, "Project Budget Company");
     const projectsSvc = projectService(db);
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const project = await projectsSvc.create(company.id, { name: "Onboarding" });
 
     const result = await dispatcher.executeTool({
@@ -1068,7 +1068,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
   it("restarts a project preview runtime through the real workspace runtime path", async () => {
     const company = await insertCompany(db, "Runtime Company");
     const projects = projectService(db);
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-home-tool-runtime-"));
     const originalShell = process.env.SHELL;
     if (process.platform === "win32") {
@@ -1135,7 +1135,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
   it("fails with a concrete error when a project has multiple runtime workspaces and no target workspace is provided", async () => {
     const company = await insertCompany(db, "Ambiguous Runtime Company");
     const projects = projectService(db);
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const firstWorkspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-home-tool-runtime-a-"));
     const secondWorkspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-home-tool-runtime-b-"));
 
@@ -1185,7 +1185,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
 
   it("creates, updates, and deletes project workspaces through Home tools with ref-safe selectors", async () => {
     const company = await insertCompany(db, "Home Project Workspace Company");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-home-project-workspace-"));
 
     try {
@@ -1271,7 +1271,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
     const company = await insertCompany(db, "Home Access Company");
     await insertUser(db, ownerUserId, "Owner User");
     await insertUser(db, invitedUserId, "Alex Join");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
 
     const inviteResult = await dispatcher.executeTool({
       ctx: {
@@ -1379,7 +1379,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
 
   it("manages company skills through Home tools, including local import and project scans", async () => {
     const company = await insertCompany(db, "Home Skill Company");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const projectsSvc = projectService(db);
     const importRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-home-skill-import-"));
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-home-skill-workspace-"));
@@ -1527,7 +1527,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
 
   it("creates company assets and updates company branding and settings through Home tools", async () => {
     const company = await insertCompany(db, "Brand Company");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const storageRoot = path.join(process.cwd(), "tmp-home-assets-" + randomUUID());
     const originalStorageProvider = process.env.PAPERCLIP_STORAGE_PROVIDER;
     const originalStorageDir = process.env.PAPERCLIP_STORAGE_LOCAL_DIR;
@@ -1625,7 +1625,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
       expect(settingsResult.data).toMatchObject({
         requireBoardApprovalForNewAgents: true,
         feedbackDataSharingEnabled: true,
-        feedbackDataSharingConsentByUserId: "user-home-tools",
+        feedbackDataSharingConsentByUserId: "user-home-capabilities",
       });
       expect((settingsResult.data as { feedbackDataSharingConsentAt: Date | null }).feedbackDataSharingConsentAt)
         .not.toBeNull();
@@ -1691,7 +1691,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
       action: "profile.test_activity",
       entityType: "issue",
       entityId: issue.id,
-      details: { source: "home-tools.test" },
+      details: { source: "home-capabilities.test" },
     });
     await db.insert(costEvents).values({
       companyId: company.id,
@@ -1707,7 +1707,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
       costCents: 37,
       occurredAt: new Date(),
     });
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const projectsSvc = projectService(db);
     const firstProject = await projectsSvc.create(company.id, { name: "Alpha" });
     const secondProject = await projectsSvc.create(company.id, { name: "Beta" });
@@ -1822,7 +1822,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
     const ownerUserId = `user-issue-state-${randomUUID()}`;
     const company = await insertCompany(db, "Issue State Company");
     await insertUser(db, ownerUserId, "Issue State User");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const issuesSvc = issueService(db);
     const agent = await agentService(db).create(company.id, {
       name: "CEO",
@@ -1963,7 +1963,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
   it("starts and stops project workspace runtimes through explicit Home alias tools", async () => {
     const company = await insertCompany(db, "Runtime Alias Company");
     const projectsSvc = projectService(db);
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-home-runtime-alias-"));
     const originalShell = process.env.SHELL;
     if (process.platform === "win32") {
@@ -2045,7 +2045,7 @@ describeEmbeddedPostgres("home tool execution authz", () => {
     const ownerUserId = `user-home-deep-${randomUUID()}`;
     const company = await insertCompany(db, "Deep Coverage Company");
     await insertUser(db, ownerUserId, "Deep Coverage User");
-    const dispatcher = createTestDispatcher(db);
+    const dispatcher = createTestRegistry(db);
     const originalSecretsMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
     process.env.PAPERCLIP_SECRETS_MASTER_KEY = "12345678901234567890123456789012";
 
@@ -2729,3 +2729,6 @@ describeEmbeddedPostgres("home tool execution authz", () => {
     }
   });
 });
+
+
+

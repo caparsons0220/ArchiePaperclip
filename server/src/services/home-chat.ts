@@ -18,11 +18,14 @@ import {
 } from "@paperclipai/shared/home-chat";
 import { HttpError, badRequest, notFound, unprocessable } from "../errors.js";
 import {
-  createHomeToolDispatcher,
-  type HomeToolContext,
-  type HomeToolDescriptor,
-  type HomeToolDispatcherOptions,
-} from "./home-tools.js";
+  createAiToolRegistry,
+  type AiToolDescriptor,
+  type AiToolRegistryContext,
+} from "./ai-tool-registry.js";
+import {
+  createHomeCapabilityRegistry,
+  type HomeCapabilityRegistryOptions,
+} from "./home-capabilities/registry.js";
 
 const HOME_CHAT_MODELS: HomeChatModel[] = [
   { id: "gpt-5.4", label: "GPT-5.4", provider: "openai", isDefault: true },
@@ -53,8 +56,9 @@ type PendingProviderToolCall = {
 };
 
 export interface HomeChatServiceOptions {
-  homeToolDispatcher?: ReturnType<typeof createHomeToolDispatcher>;
-  homeToolDispatcherOptions?: HomeToolDispatcherOptions;
+  aiToolRegistry?: ReturnType<typeof createAiToolRegistry>;
+  homeCapabilityRegistry?: ReturnType<typeof createHomeCapabilityRegistry>;
+  homeCapabilityRegistryOptions?: HomeCapabilityRegistryOptions;
 }
 
 function parseMessages(value: unknown): HomeChatMessage[] {
@@ -125,10 +129,11 @@ function buildSystemPrompt(input: {
     `Current company: ${input.companyName}`,
     descriptionLine,
     "Help with planning, prioritization, roadmap pressure-testing, launch briefs, board updates, and company operations for this company.",
-    "You can use company-scoped Home tools to inspect or change this company's state.",
-    "You receive only a bounded subset of relevant Home tools on each turn. Use a tool directly when it clearly matches the user's request.",
-    "If the user asks what Archie can do, summarize only the tools exposed on this turn and do not invent hidden capabilities.",
-    "Never invent URLs or call raw endpoints. Never request or expose platform/server/admin controls. Never ask the user for companyId, userId, or other scope values; the server supplies them.",
+    "You can use company-scoped AI tools to inspect or change this company's workflow state.",
+    "You receive only a bounded subset of relevant AI tools on each turn. Use a tool directly when it clearly matches the user's request.",
+    "Use ai_tools to list, search, or explain currently callable tools when the user asks what tools exist or when tool choice is unclear.",
+    "Admin/platform tools are not exposed: no server control, migrations, backups, deploys, adapter/plugin install, raw DB, shell/process/SSH, or config mutation.",
+    "Never invent URLs or call raw endpoints. Never ask for platform/server/admin controls. Never ask the user for companyId, userId, or other scope values; the server supplies them.",
     "Never invent UUIDs or raw database identifiers. If a tool accepts a human-readable ref, use that. If you need an exact target and do not already have one, call the relevant lookup tool first.",
     "Home tools execute immediately. Only call a tool when its effect matches the user's request, and describe the actual result returned by the server.",
     "Secret values are write-only/redacted. You may list secret metadata, but never reveal decrypted secret material.",
@@ -227,7 +232,7 @@ function mapMessagesToAnthropicInput(messages: HomeChatMessage[]): AnthropicConv
   }));
 }
 
-function buildProviderToolDefinitions(provider: HomeChatProvider, tools: HomeToolDescriptor[]): unknown[] {
+function buildProviderToolDefinitions(provider: HomeChatProvider, tools: AiToolDescriptor[]): unknown[] {
   if (provider === "anthropic") {
     return tools.map((tool) => ({
       name: tool.name,
@@ -245,16 +250,18 @@ function buildProviderToolDefinitions(provider: HomeChatProvider, tools: HomeToo
 }
 
 async function runSelectedHomeTool(input: {
-  dispatcher: ReturnType<typeof createHomeToolDispatcher>;
-  ctx: HomeToolContext;
-  allowedTools: Map<string, HomeToolDescriptor>;
+  registry: ReturnType<typeof createAiToolRegistry>;
+  ctx: AiToolRegistryContext;
+  allowedTools: Map<string, AiToolDescriptor>;
   toolCall: PendingProviderToolCall;
   onEvent: (event: HomeChatStreamEvent) => Promise<void> | void;
 }) {
-  const descriptor = input.allowedTools.get(input.toolCall.toolName);
-  if (!descriptor) {
+  const allowedDescriptor = input.allowedTools.get(input.toolCall.toolName);
+  if (!allowedDescriptor) {
     throw new Error(`Home tool is not available in this turn: ${input.toolCall.toolName}`);
   }
+  let descriptor = input.registry.getToolCallDescriptor(input.ctx, allowedDescriptor.name, input.toolCall.arguments)
+    ?? allowedDescriptor;
 
   await input.onEvent({
     type: "tool_call_requested",
@@ -271,12 +278,13 @@ async function runSelectedHomeTool(input: {
     displayName: descriptor.displayName,
   });
   try {
-    const execution = await input.dispatcher.executeTool({
+    const execution = await input.registry.executeTool({
       ctx: input.ctx,
-      name: descriptor.name,
+      name: allowedDescriptor.name,
       parameters: input.toolCall.arguments,
       toolCallId: input.toolCall.providerCallId,
     });
+    descriptor = execution.descriptor;
     await input.onEvent({
       type: "tool_call_result",
       toolCallId: execution.toolCallId,
@@ -327,7 +335,7 @@ async function runSelectedHomeTool(input: {
 
 function validatePendingToolCall(input: {
   toolCall: PendingProviderToolCall;
-  allowedTools: Map<string, HomeToolDescriptor>;
+  allowedTools: Map<string, AiToolDescriptor>;
 }) {
   const toolName = sanitizeToolName(input.toolCall.toolName);
   if (!toolName) {
@@ -375,8 +383,8 @@ function ensureProviderApiKey(provider: HomeChatProvider) {
 
 async function streamOpenAIResponse(input: {
   apiKey: string;
-  dispatcher: ReturnType<typeof createHomeToolDispatcher>;
-  ctx: HomeToolContext;
+  registry: ReturnType<typeof createAiToolRegistry>;
+  ctx: AiToolRegistryContext;
   model: HomeChatModel;
   systemPrompt: string;
   toolQuery: string;
@@ -387,7 +395,7 @@ async function streamOpenAIResponse(input: {
   onEvent: (event: HomeChatStreamEvent) => Promise<void> | void;
 }): Promise<string> {
   const client = new OpenAI({ apiKey: input.apiKey });
-  const selection = input.dispatcher.selectTools(input.toolQuery);
+  const selection = input.registry.selectTools(input.ctx, input.toolQuery);
   const toolDefinitions = buildProviderToolDefinitions("openai", selection.tools);
   const allowedTools = new Map(selection.tools.map((tool) => [tool.name, tool]));
   const stream = await client.responses.create({
@@ -466,7 +474,7 @@ async function streamOpenAIResponse(input: {
     const toolResults = [];
     for (const toolCall of finalizedToolCalls.slice(0, remainingToolCalls)) {
       toolResults.push(await runSelectedHomeTool({
-        dispatcher: input.dispatcher,
+        registry: input.registry,
         ctx: input.ctx,
         allowedTools,
         toolCall,
@@ -512,8 +520,8 @@ async function streamOpenAIResponse(input: {
 
 async function streamAnthropicResponse(input: {
   apiKey: string;
-  dispatcher: ReturnType<typeof createHomeToolDispatcher>;
-  ctx: HomeToolContext;
+  registry: ReturnType<typeof createAiToolRegistry>;
+  ctx: AiToolRegistryContext;
   model: HomeChatModel;
   systemPrompt: string;
   toolQuery: string;
@@ -524,7 +532,7 @@ async function streamAnthropicResponse(input: {
   onEvent: (event: HomeChatStreamEvent) => Promise<void> | void;
 }): Promise<string> {
   const client = new Anthropic({ apiKey: input.apiKey });
-  const selection = input.dispatcher.selectTools(input.toolQuery);
+  const selection = input.registry.selectTools(input.ctx, input.toolQuery);
   const toolDefinitions = buildProviderToolDefinitions("anthropic", selection.tools);
   const allowedTools = new Map(selection.tools.map((tool) => [tool.name, tool]));
   const stream = await client.messages.create({
@@ -622,7 +630,7 @@ async function streamAnthropicResponse(input: {
     const toolResults = [];
     for (const toolCall of completedToolCalls.slice(0, remainingToolCalls)) {
       toolResults.push(await runSelectedHomeTool({
-        dispatcher: input.dispatcher,
+        registry: input.registry,
         ctx: input.ctx,
         allowedTools,
         toolCall,
@@ -695,6 +703,23 @@ export function homeChatService(db: Db, options: HomeChatServiceOptions = {}) {
 
   return {
     listModels: async () => HOME_CHAT_MODELS,
+
+    listEffectiveTools: async (
+      companyId: string,
+      ownerUserId: string,
+      input: { category?: string | null; includeDisabled?: boolean; limit?: number } = {},
+    ) => {
+      const registry = options.aiToolRegistry ?? createAiToolRegistry(db, {
+        homeCapabilityRegistry: options.homeCapabilityRegistry ?? createHomeCapabilityRegistry(db, options.homeCapabilityRegistryOptions),
+        homeCapabilityRegistryOptions: options.homeCapabilityRegistryOptions,
+      });
+      return registry.listEffectiveTools({
+        companyId,
+        ownerUserId,
+        threadId: "effective-inventory",
+        surface: "home",
+      }, input);
+    },
 
     listThreads: async (companyId: string, ownerUserId: string) => {
       const rows = await db
@@ -832,16 +857,20 @@ export function homeChatService(db: Db, options: HomeChatServiceOptions = {}) {
         companyName: company.name,
         companyDescription: company.description,
       });
-      const ctx: HomeToolContext = {
+      const ctx: AiToolRegistryContext = {
         companyId: input.companyId,
         ownerUserId: input.ownerUserId,
         threadId: input.threadId,
+        surface: "home",
       };
-      const dispatcher = options.homeToolDispatcher ?? createHomeToolDispatcher(db, options.homeToolDispatcherOptions);
+      const registry = options.aiToolRegistry ?? createAiToolRegistry(db, {
+        homeCapabilityRegistry: options.homeCapabilityRegistry ?? createHomeCapabilityRegistry(db, options.homeCapabilityRegistryOptions),
+        homeCapabilityRegistryOptions: options.homeCapabilityRegistryOptions,
+      });
       const apiKey = ensureProviderApiKey(model.provider);
       const streamInput = {
         apiKey,
-        dispatcher,
+        registry,
         ctx,
         model,
         systemPrompt,
