@@ -177,6 +177,10 @@ type RuntimeConfigSecretResolver = Pick<
   "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
 >;
 
+export interface HeartbeatServiceOptions {
+  autoStartQueuedRuns?: boolean;
+}
+
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
   executionRunConfig: Record<string, unknown>;
@@ -1821,7 +1825,8 @@ function resolveNextSessionState(input: {
   };
 }
 
-export function heartbeatService(db: Db) {
+export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  const autoStartQueuedRuns = options.autoStartQueuedRuns !== false;
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -1839,6 +1844,11 @@ export function heartbeatService(db: Db) {
   };
   const budgets = budgetService(db, budgetHooks);
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
+
+  async function maybeStartQueuedRunForAgent(agentId: string) {
+    if (!autoStartQueuedRuns) return;
+    await startNextQueuedRunForAgent(agentId);
+  }
 
   async function hasUnsafeTextProjectionDatabase() {
     if (!unsafeTextProjectionPromise) {
@@ -6657,7 +6667,7 @@ export function heartbeatService(db: Db) {
 
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
       if (outcome.kind === "coalesced") {
-        await startNextQueuedRunForAgent(agent.id);
+        await maybeStartQueuedRunForAgent(agent.id);
         return outcome.run;
       }
 
@@ -6674,7 +6684,7 @@ export function heartbeatService(db: Db) {
         },
       });
 
-      await startNextQueuedRunForAgent(agent.id);
+      await maybeStartQueuedRunForAgent(agent.id);
       return newRun;
     }
 
@@ -6789,7 +6799,7 @@ export function heartbeatService(db: Db) {
       },
     });
 
-    await startNextQueuedRunForAgent(agent.id);
+    await maybeStartQueuedRunForAgent(agent.id);
 
     return newRun;
   }

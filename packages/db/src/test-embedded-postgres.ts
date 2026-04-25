@@ -2,6 +2,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { applyPendingMigrations, ensurePostgresDatabase } from "./client.js";
 
 type EmbeddedPostgresInstance = {
@@ -32,6 +33,69 @@ export type EmbeddedPostgresTestDatabase = {
 };
 
 let embeddedPostgresSupportPromise: Promise<EmbeddedPostgresTestSupport> | null = null;
+const TRANSIENT_RM_ERROR_CODES = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+
+function getErrorCode(error: unknown): string {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
+}
+
+function isTransientRemoveDirError(error: unknown): boolean {
+  return TRANSIENT_RM_ERROR_CODES.has(getErrorCode(error));
+}
+
+async function removeDirWithRetry(targetPath: string, attempts = 12) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      fs.rmSync(targetPath, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!isTransientRemoveDirError(error) || attempt === attempts - 1) {
+        throw error;
+      }
+      await delay(50 * (attempt + 1));
+    }
+  }
+}
+
+async function cleanupEmbeddedPostgresDataDir(
+  instance: EmbeddedPostgresInstance,
+  dataDir: string,
+  {
+    warnOnlyOnTransientFailure = false,
+  }: {
+    warnOnlyOnTransientFailure?: boolean;
+  } = {},
+) {
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await instance.stop().catch(() => {});
+    await delay(50 * (attempt + 1));
+
+    try {
+      await removeDirWithRetry(dataDir, 3);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isTransientRemoveDirError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  if (lastError && warnOnlyOnTransientFailure && isTransientRemoveDirError(lastError)) {
+    console.warn(
+      `[test-embedded-postgres] Leaving temp database directory in place after transient cleanup failures: ${dataDir} (${formatEmbeddedPostgresError(lastError)})`,
+    );
+    return;
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+}
 
 async function getEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   const mod = await import("embedded-postgres");
@@ -89,8 +153,13 @@ async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSuppo
       reason: formatEmbeddedPostgresError(error),
     };
   } finally {
-    await instance.stop().catch(() => {});
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    await cleanupEmbeddedPostgresDataDir(instance, dataDir, {
+      warnOnlyOnTransientFailure: true,
+    }).catch((cleanupError) => {
+      console.warn(
+        `[test-embedded-postgres] Cleanup after support probe failed for ${dataDir}: ${formatEmbeddedPostgresError(cleanupError)}`,
+      );
+    });
   }
 }
 
@@ -130,15 +199,22 @@ export async function startEmbeddedPostgresTestDatabase(
     return {
       connectionString,
       cleanup: async () => {
-        await instance.stop().catch(() => {});
-        fs.rmSync(dataDir, { recursive: true, force: true });
+        await cleanupEmbeddedPostgresDataDir(instance, dataDir, {
+          warnOnlyOnTransientFailure: true,
+        });
       },
     };
   } catch (error) {
-    await instance.stop().catch(() => {});
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    let cleanupError: unknown = null;
+    await cleanupEmbeddedPostgresDataDir(instance, dataDir, {
+      warnOnlyOnTransientFailure: true,
+    }).catch((innerError) => {
+      cleanupError = innerError;
+    });
     throw new Error(
-      `Failed to start embedded PostgreSQL test database: ${formatEmbeddedPostgresError(error)}`,
+      `Failed to start embedded PostgreSQL test database: ${formatEmbeddedPostgresError(error)}${
+        cleanupError ? ` (cleanup also failed: ${formatEmbeddedPostgresError(cleanupError)})` : ""
+      }`,
     );
   }
 }

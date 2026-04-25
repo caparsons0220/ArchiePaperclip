@@ -21,6 +21,7 @@ import {
   createHomeToolDispatcher,
   type HomeToolContext,
   type HomeToolDescriptor,
+  type HomeToolDispatcherOptions,
 } from "./home-tools.js";
 
 const HOME_CHAT_MODELS: HomeChatModel[] = [
@@ -50,6 +51,11 @@ type PendingProviderToolCall = {
   toolName: string;
   arguments: Record<string, unknown>;
 };
+
+export interface HomeChatServiceOptions {
+  homeToolDispatcher?: ReturnType<typeof createHomeToolDispatcher>;
+  homeToolDispatcherOptions?: HomeToolDispatcherOptions;
+}
 
 function parseMessages(value: unknown): HomeChatMessage[] {
   const parsed = homeChatMessageSchema.array().safeParse(value ?? []);
@@ -672,7 +678,7 @@ async function streamAnthropicResponse(input: {
   return content.trim();
 }
 
-export function homeChatService(db: Db) {
+export function homeChatService(db: Db, options: HomeChatServiceOptions = {}) {
   async function getOwnedThreadRow(companyId: string, ownerUserId: string, threadId: string) {
     return await db
       .select()
@@ -831,7 +837,7 @@ export function homeChatService(db: Db) {
         ownerUserId: input.ownerUserId,
         threadId: input.threadId,
       };
-      const dispatcher = createHomeToolDispatcher(db);
+      const dispatcher = options.homeToolDispatcher ?? createHomeToolDispatcher(db, options.homeToolDispatcherOptions);
       const apiKey = ensureProviderApiKey(model.provider);
       const streamInput = {
         apiKey,

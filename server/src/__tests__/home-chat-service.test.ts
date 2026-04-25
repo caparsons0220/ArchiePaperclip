@@ -1,21 +1,43 @@
+import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
+  approvals,
   authUsers,
   agents,
   budgetIncidents,
   budgetPolicies,
+  companyMemberships,
+  companySecretVersions,
+  companySecrets,
+  companySkills,
   companies,
   createDb,
+  heartbeatRuns,
   homeChatThreads,
+  invites,
+  issueComments,
+  issueInboxArchives,
+  issues,
+  projects,
+  projectWorkspaces,
+  workspaceRuntimeServices,
 } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { cleanupHomeHeartbeatSideEffects } from "./helpers/home-heartbeat-cleanup.js";
 import { homeChatService } from "../services/home-chat.js";
+import { createHomeToolDispatcher } from "../services/home-tools.js";
+import { issueService } from "../services/issues.js";
+import { projectService } from "../services/projects.js";
+import { secretService } from "../services/secrets.js";
+import { stopRuntimeServicesForProjectWorkspace } from "../services/workspace-runtime.js";
 
 const openAICreateMock = vi.hoisted(() => vi.fn());
 const anthropicCreateMock = vi.hoisted(() => vi.fn());
@@ -83,7 +105,11 @@ describeEmbeddedPostgres("home chat service", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-home-chat-service-");
     db = createDb(tempDb.connectionString);
-    svc = homeChatService(db);
+    svc = homeChatService(db, {
+      homeToolDispatcherOptions: {
+        heartbeatOptions: { autoStartQueuedRuns: false },
+      },
+    });
     originalOpenAIKey = process.env.OPENAI_API_KEY;
     originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
   }, 20_000);
@@ -96,10 +122,22 @@ describeEmbeddedPostgres("home chat service", () => {
   });
 
   afterEach(async () => {
-    await db.delete(activityLog);
+    await db.delete(invites);
+    await db.delete(workspaceRuntimeServices);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     await db.delete(budgetIncidents);
     await db.delete(budgetPolicies);
+    await db.delete(approvals);
+    await db.delete(issueInboxArchives);
+    await db.delete(companyMemberships);
+    await db.delete(companySecretVersions);
+    await db.delete(companySecrets);
+    await db.delete(companySkills);
     await db.delete(homeChatThreads);
+    await db.delete(issueComments);
+    await db.delete(issues);
+    await cleanupHomeHeartbeatSideEffects(db);
     await db.delete(agents);
     await db.delete(authUsers);
     await db.delete(companies);
@@ -365,6 +403,705 @@ describeEmbeddedPostgres("home chat service", () => {
     ]));
     expect(events.find((event) => event.type === "tool_call_failed")).toBeUndefined();
     expect(assistantMessage.content).toBe("Paused the CEO agent.");
+  });
+
+  it("executes agent wake actions end to end with lookup plus runtime-aware tools", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-agent-wake-tools-${randomUUID()}`;
+    const company = await insertCompany(db, "Agent Wake Tool Company");
+    await insertUser(db, userId, "Agent Wake Tool User");
+    const agent = await db
+      .insert(agents)
+      .values({
+        companyId: company.id,
+        name: "CEO",
+        role: "general",
+        title: "Chief Executive Officer",
+        model: "test-model",
+        status: "idle",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-list-agents-wake",
+            name: "list_agents",
+            arguments: JSON.stringify({}),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-wake-agent",
+            name: "wake_agent",
+            arguments: JSON.stringify({
+              agentRef: "CEO",
+              reason: "manual_followup",
+              payload: { topic: "launch" },
+            }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "Queued a wakeup for the CEO agent." },
+      ]));
+
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "Wake the CEO agent.",
+      modelId: "gpt-5.4",
+      onEvent: () => undefined,
+    });
+
+    const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
+    expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "list_agents",
+      "get_agent",
+      "get_agent_runtime_state",
+      "wake_agent",
+    ]));
+    expect(firstTools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
+      "list_home_tools",
+      "search_home_tools",
+      "call_home_tool",
+      "install_adapter",
+      "reload_plugin",
+    ]));
+
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agent.id))
+      .then((rows) => rows[0] ?? null);
+    expect(run).toMatchObject({
+      companyId: company.id,
+      agentId: agent.id,
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      status: "queued",
+    });
+    const wakeupRequest = run?.wakeupRequestId
+      ? await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    expect(wakeupRequest).toMatchObject({
+      id: run?.wakeupRequestId,
+      companyId: company.id,
+      agentId: agent.id,
+      status: "queued",
+      runId: run?.id,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_followup",
+    });
+    expect(assistantMessage.content).toBe("Queued a wakeup for the CEO agent.");
+  });
+
+  it("executes company invite creation end to end with internal-only access tools", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-home-invite-tools-${randomUUID()}`;
+    const company = await insertCompany(db, "Invite Tool Company");
+    await insertUser(db, userId, "Invite Tool User");
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-create-company-invite",
+            name: "create_company_invite",
+            arguments: JSON.stringify({
+              allowedJoinTypes: "human",
+              humanRole: "operator",
+              agentMessage: "Alex, join the company.",
+            }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "Created an invite for Alex." },
+      ]));
+
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "Invite alex to the company.",
+      modelId: "gpt-5.4",
+      onEvent: () => undefined,
+    });
+
+    const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
+    expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "create_company_invite",
+      "list_company_invites",
+    ]));
+    expect(firstTools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
+      "install_adapter",
+      "reload_plugin",
+      "backup_database",
+      "run_migration",
+    ]));
+
+    const invite = await db
+      .select()
+      .from(invites)
+      .where(eq(invites.companyId, company.id))
+      .then((rows) => rows[0] ?? null);
+    expect(invite).toMatchObject({
+      companyId: company.id,
+      allowedJoinTypes: "human",
+      inviteType: "company_join",
+      invitedByUserId: userId,
+    });
+    expect(assistantMessage.content).toBe("Created an invite for Alex.");
+  });
+
+  it("executes issue comment actions end to end with lookup plus mutation tools", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-issue-comment-tools-${randomUUID()}`;
+    const company = await insertCompany(db, "Issue Comment Tool Company");
+    await insertUser(db, userId, "Issue Comment Tool User");
+    const issuesSvc = issueService(db);
+    const issue = await issuesSvc.create(company.id, {
+      title: "Onboarding",
+      status: "todo",
+      priority: "medium",
+    });
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-list-issues",
+            name: "list_issues",
+            arguments: JSON.stringify({ q: "Onboarding" }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-add-issue-comment",
+            name: "add_issue_comment",
+            arguments: JSON.stringify({
+              issueRef: "Onboarding",
+              body: "Need a tighter rollout checklist before launch.",
+            }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "Added the comment to the onboarding issue." },
+      ]));
+
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "Add a comment to the onboarding issue saying we need a tighter rollout checklist before launch.",
+      modelId: "gpt-5.4",
+      onEvent: () => undefined,
+    });
+
+    const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
+    expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "list_issues",
+      "get_issue",
+      "add_issue_comment",
+    ]));
+
+    const comments = await issuesSvc.listComments(issue.id, { order: "asc" });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Need a tighter rollout checklist before launch.");
+    expect(assistantMessage.content).toBe("Added the comment to the onboarding issue.");
+  });
+
+  it("executes company user profile lookups end to end with directory-aware tools", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `dotta-${randomUUID()}`;
+    const company = await insertCompany(db, "Profile Tool Company");
+    await insertUser(db, userId, "Dotta");
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "admin",
+    });
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-get-company-user-profile",
+            name: "get_company_user_profile",
+            arguments: JSON.stringify({
+              userRef: "dotta",
+            }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "Loaded Dotta's company profile." },
+      ]));
+
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "Show dotta's profile.",
+      modelId: "gpt-5.4",
+      onEvent: () => undefined,
+    });
+
+    const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
+    expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "get_company_user_profile",
+      "list_company_user_directory",
+    ]));
+    expect(assistantMessage.content).toBe("Loaded Dotta's company profile.");
+  });
+
+  it("executes issue inbox archive actions end to end with lookup plus state tools", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-archive-issue-${randomUUID()}`;
+    const company = await insertCompany(db, "Issue Archive Tool Company");
+    await insertUser(db, userId, "Archive Tool User");
+    const issue = await issueService(db).create(company.id, {
+      title: "Onboarding",
+      status: "todo",
+      priority: "medium",
+    });
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-list-issues-archive",
+            name: "list_issues",
+            arguments: JSON.stringify({ q: "Onboarding" }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-archive-issue-inbox",
+            name: "archive_issue_inbox",
+            arguments: JSON.stringify({
+              issueRef: "Onboarding",
+            }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "Archived onboarding from the inbox." },
+      ]));
+
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "Archive onboarding from my inbox.",
+      modelId: "gpt-5.4",
+      onEvent: () => undefined,
+    });
+
+    const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
+    expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "list_issues",
+      "get_issue",
+      "archive_issue_inbox",
+    ]));
+    const archived = await db
+      .select()
+      .from(issueInboxArchives)
+      .where(eq(issueInboxArchives.issueId, issue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(archived).toMatchObject({
+      companyId: company.id,
+      issueId: issue.id,
+      userId,
+    });
+    expect(assistantMessage.content).toBe("Archived onboarding from the inbox.");
+  });
+
+  it("executes issue checkout actions end to end with issue and agent lookup tools", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-checkout-issue-${randomUUID()}`;
+    const company = await insertCompany(db, "Issue Checkout Tool Company");
+    await insertUser(db, userId, "Checkout Tool User");
+    const issue = await issueService(db).create(company.id, {
+      title: "Onboarding",
+      status: "todo",
+      priority: "medium",
+    });
+    const agent = await db
+      .insert(agents)
+      .values({
+        companyId: company.id,
+        name: "CEO",
+        role: "ceo",
+        title: "Chief Executive Officer",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        status: "idle",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-list-issues-checkout",
+            name: "list_issues",
+            arguments: JSON.stringify({ q: "Onboarding" }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-checkout-issue",
+            name: "checkout_issue",
+            arguments: JSON.stringify({
+              issueRef: "Onboarding",
+              agentRef: "CEO",
+            }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "Checked out onboarding to the CEO agent." },
+      ]));
+
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "Check out onboarding to the CEO agent.",
+      modelId: "gpt-5.4",
+      onEvent: () => undefined,
+    });
+
+    const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
+    expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "list_issues",
+      "get_issue",
+      "list_agents",
+      "get_agent",
+      "checkout_issue",
+    ]));
+    const updatedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue).toMatchObject({
+      assigneeAgentId: agent.id,
+    });
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agent.id))
+      .then((rows) => rows[0] ?? null);
+    expect(run).toMatchObject({
+      status: "queued",
+      invocationSource: "assignment",
+    });
+    expect(assistantMessage.content).toBe("Checked out onboarding to the CEO agent.");
+  });
+
+  it("executes preview stop actions end to end with runtime-aware tools", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-stop-preview-${randomUUID()}`;
+    const company = await insertCompany(db, "Stop Preview Tool Company");
+    await insertUser(db, userId, "Stop Preview User");
+    const projectsSvc = projectService(db);
+    const dispatcher = createHomeToolDispatcher(db, {
+      heartbeatOptions: { autoStartQueuedRuns: false },
+    });
+    const workspaceRoot = await fs.mkdtemp(path.join(process.cwd(), "tmp-home-chat-runtime-" + randomUUID()));
+    const originalShell = process.env.SHELL;
+    if (process.platform === "win32") {
+      process.env.SHELL = "C:\\Program Files\\Git\\bin\\bash.exe";
+    }
+
+    try {
+      const project = await projectsSvc.create(company.id, { name: "Onboarding" });
+      const workspace = await projectsSvc.createWorkspace(project.id, {
+        name: "Preview Workspace",
+        cwd: workspaceRoot,
+        isPrimary: true,
+        runtimeConfig: {
+          workspaceRuntime: {
+            services: [
+              {
+                name: "web",
+                command:
+                  "node -e \"require('node:http').createServer((req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+                port: { type: "auto" },
+                readiness: {
+                  type: "http",
+                  urlTemplate: "http://127.0.0.1:{{port}}",
+                  timeoutSec: 10,
+                  intervalMs: 100,
+                },
+                lifecycle: "shared",
+                reuseScope: "project_workspace",
+                stopPolicy: { type: "manual" },
+              },
+            ],
+          },
+        },
+      });
+      await dispatcher.executeTool({
+        ctx: {
+          companyId: company.id,
+          ownerUserId: userId,
+          threadId: randomUUID(),
+        },
+        name: "start_project_workspace_runtime",
+        parameters: {
+          projectRef: "Onboarding",
+          projectWorkspaceRef: "Preview Workspace",
+        },
+      });
+
+      const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+      openAICreateMock
+        .mockResolvedValueOnce(createAsyncIterable([
+          {
+            type: "response.output_item.done",
+            item: {
+              type: "function_call",
+              call_id: "call-stop-project-runtime",
+              name: "stop_project_workspace_runtime",
+              arguments: JSON.stringify({
+                projectRef: "Onboarding",
+                projectWorkspaceRef: "Preview Workspace",
+              }),
+            },
+          },
+        ]))
+        .mockResolvedValueOnce(createAsyncIterable([
+          { type: "response.output_text.delta", delta: "Stopped the onboarding preview." },
+        ]));
+
+      const assistantMessage = await svc.streamThreadReply({
+        companyId: company.id,
+        ownerUserId: userId,
+        threadId: thread.id,
+        content: "Stop the onboarding preview.",
+        modelId: "gpt-5.4",
+        onEvent: () => undefined,
+      });
+
+      const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
+      expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+        "stop_project_workspace_runtime",
+        "list_projects",
+        "list_project_workspaces",
+        "get_active_preview",
+      ]));
+      const runtimeRows = await db
+        .select()
+        .from(workspaceRuntimeServices)
+        .where(eq(workspaceRuntimeServices.projectWorkspaceId, workspace.id));
+      expect(runtimeRows.every((row) => row.status === "stopped")).toBe(true);
+      expect(assistantMessage.content).toBe("Stopped the onboarding preview.");
+    } finally {
+      process.env.SHELL = originalShell;
+      const workspaceId = await db
+        .select()
+        .from(projectWorkspaces)
+        .where(eq(projectWorkspaces.cwd, workspaceRoot))
+        .then((rows) => rows[0]?.id ?? null);
+      if (workspaceId) {
+        await stopRuntimeServicesForProjectWorkspace({
+          db,
+          projectWorkspaceId: workspaceId,
+        }).catch(() => undefined);
+      }
+      await fs.rm(workspaceRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it("executes secret rotation actions end to end with redacted secret tools", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const originalSecretsMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY = "12345678901234567890123456789012";
+    const userId = `user-rotate-secret-${randomUUID()}`;
+    const company = await insertCompany(db, "Rotate Secret Tool Company");
+    await insertUser(db, userId, "Rotate Secret User");
+    const secrets = secretService(db);
+    const secret = await secrets.create(company.id, {
+      name: "FOLLOWUP_BOSS_API_KEY",
+      provider: "local_encrypted",
+      value: "first-secret",
+    }, {
+      userId,
+    });
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    try {
+      openAICreateMock
+        .mockResolvedValueOnce(createAsyncIterable([
+          {
+            type: "response.output_item.done",
+            item: {
+              type: "function_call",
+              call_id: "call-rotate-secret",
+              name: "rotate_company_secret",
+              arguments: JSON.stringify({
+                secretRef: "FOLLOWUP_BOSS_API_KEY",
+                value: "second-secret",
+              }),
+            },
+          },
+        ]))
+        .mockResolvedValueOnce(createAsyncIterable([
+          { type: "response.output_text.delta", delta: "Rotated the FollowupBoss secret." },
+        ]));
+
+      const assistantMessage = await svc.streamThreadReply({
+        companyId: company.id,
+        ownerUserId: userId,
+        threadId: thread.id,
+        content: "Rotate the FollowupBoss secret.",
+        modelId: "gpt-5.4",
+        onEvent: () => undefined,
+      });
+
+      const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
+      expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+        "list_secret_metadata",
+        "rotate_company_secret",
+      ]));
+      const rotated = await db
+        .select()
+        .from(companySecrets)
+        .where(eq(companySecrets.id, secret.id))
+        .then((rows) => rows[0] ?? null);
+      expect(rotated).toMatchObject({
+        latestVersion: 2,
+      });
+      expect(assistantMessage.content).toBe("Rotated the FollowupBoss secret.");
+    } finally {
+      process.env.PAPERCLIP_SECRETS_MASTER_KEY = originalSecretsMasterKey;
+    }
+  });
+
+  it("executes approval actions end to end with approval lookup tools", async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    const userId = `user-approval-tools-${randomUUID()}`;
+    const company = await insertCompany(db, "Approval Tool Company");
+    await insertUser(db, userId, "Approval Tool User");
+    const approval = await db
+      .insert(approvals)
+      .values({
+        companyId: company.id,
+        type: "budget_override_required",
+        requestedByUserId: userId,
+        status: "pending",
+        payload: { scopeType: "company", amountLimit: 1200 },
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const thread = await svc.createThread(company.id, userId, { selectedModelId: "gpt-5.4" });
+
+    openAICreateMock
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-list-approvals",
+            name: "list_approvals",
+            arguments: JSON.stringify({ status: "pending" }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "function_call",
+            call_id: "call-approve-approval",
+            name: "approve_approval",
+            arguments: JSON.stringify({
+              approvalId: approval.id,
+              decisionNote: "Approved for launch.",
+            }),
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(createAsyncIterable([
+        { type: "response.output_text.delta", delta: "Approved the latest budget approval." },
+      ]));
+
+    const assistantMessage = await svc.streamThreadReply({
+      companyId: company.id,
+      ownerUserId: userId,
+      threadId: thread.id,
+      content: "Approve the latest budget approval.",
+      modelId: "gpt-5.4",
+      onEvent: () => undefined,
+    });
+
+    const firstTools = openAICreateMock.mock.calls[0]?.[0]?.tools as Array<{ name?: string }>;
+    expect(firstTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "list_approvals",
+      "get_approval",
+      "approve_approval",
+    ]));
+    const approved = await db
+      .select()
+      .from(approvals)
+      .where(eq(approvals.id, approval.id))
+      .then((rows) => rows[0] ?? null);
+    expect(approved).toMatchObject({
+      status: "approved",
+      decidedByUserId: userId,
+    });
+    expect(assistantMessage.content).toBe("Approved the latest budget approval.");
   });
 
   it("widens direct internal tool exposure for capability questions without wrapper tools", async () => {
